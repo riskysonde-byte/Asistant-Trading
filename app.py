@@ -3,9 +3,10 @@ import base64
 import concurrent.futures as cf
 import html
 import json
+import time
 
-import anthropic
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -13,7 +14,7 @@ from agents import PROMPTS
 
 st.set_page_config(page_title='Asisten Trading IDX', layout='wide')
 
-MODEL = 'claude-sonnet-5-5'
+MODEL_DEFAULT = 'gemini-2.5-flash'   # bisa diganti lewat Secrets: GEMINI_MODEL
 STRATEGI = ['Swing Trading', 'Breakout', 'Volume Spike']
 MIN_NILAI_TRANSAKSI = 5_000_000_000   # filter likuiditas: Rp5 miliar per hari
 
@@ -45,9 +46,13 @@ if sandi:
         st.stop()
 
 
-@st.cache_resource
-def client():
-    return anthropic.Anthropic(api_key=rahasia('ANTHROPIC_API_KEY'))
+def kunci():
+    k = rahasia('GEMINI_API_KEY')
+    return str(k).strip() if k else None
+
+
+def model_ai():
+    return str(rahasia('GEMINI_MODEL') or MODEL_DEFAULT).strip()
 
 
 # ---------- Data ----------
@@ -218,24 +223,41 @@ def pindai(universe, nama, bmap_json='{}'):
 
 # ---------- Agen ----------
 def blok_gambar(files):
-    # Ubah screenshot yang diunggah menjadi blok gambar untuk Claude.
+    # Ubah screenshot yang diunggah menjadi bagian gambar untuk Gemini.
     blok = []
     for f in files or []:
-        tipe = f.type if f.type in ('image/png', 'image/jpeg', 'image/webp', 'image/gif') else 'image/png'
-        blok.append({'type': 'image', 'source': {
-            'type': 'base64', 'media_type': tipe,
-            'data': base64.b64encode(f.getvalue()).decode()}})
+        tipe = f.type if f.type in ('image/png', 'image/jpeg', 'image/webp') else 'image/png'
+        blok.append({'inline_data': {'mime_type': tipe,
+                                     'data': base64.b64encode(f.getvalue()).decode()}})
     return blok
 
 
 def jalankan(nama, payload, max_tokens=1200, gambar=None):
-    isi = list(gambar or [])
-    isi.append({'type': 'text', 'text': json.dumps(payload, ensure_ascii=False, default=str)})
-    r = client().messages.create(
-        model=MODEL, max_tokens=max_tokens, system=PROMPTS[nama],
-        messages=[{'role': 'user', 'content': isi}],
-    )
-    return r.content[0].text
+    k = kunci()
+    if not k:
+        raise RuntimeError('GEMINI_API_KEY belum diisi di Secrets')
+    bagian = list(gambar or [])
+    bagian.append({'text': json.dumps(payload, ensure_ascii=False, default=str)})
+    body = {
+        'system_instruction': {'parts': [{'text': PROMPTS[nama]}]},
+        'contents': [{'role': 'user', 'parts': bagian}],
+        'generationConfig': {'maxOutputTokens': max(max_tokens, 2000), 'temperature': 0.3},
+    }
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model_ai() + ':generateContent'
+    r = None
+    for percobaan in range(3):
+        r = requests.post(url, headers={'x-goog-api-key': k}, json=body, timeout=90)
+        if r.status_code in (429, 500, 503) and percobaan < 2:
+            time.sleep(4 * (percobaan + 1))
+            continue
+        break
+    if r.status_code != 200:
+        raise RuntimeError('Gemini ' + str(r.status_code) + ': ' + r.text[:200])
+    data = r.json()
+    try:
+        return ''.join(p.get('text', '') for p in data['candidates'][0]['content']['parts'])
+    except Exception:
+        raise RuntimeError('Jawaban Gemini kosong atau diblokir: ' + json.dumps(data)[:200])
 
 
 def ekstrak_broker(files):
@@ -438,7 +460,7 @@ def halaman_analisis():
             laporan['ALERT'] = jalankan('ALERT', {k: laporan[k] for k in ['ENTRY', 'EXIT', 'RISIKO']})
             final = jalankan('ASISTEN / KOORDINATOR', laporan, max_tokens=1500)
     except Exception as e:
-        st.error('Agen gagal berjalan. Cek ANTHROPIC_API_KEY di Secrets. ' + str(e)[:200])
+        st.error('Agen gagal berjalan. Cek GEMINI_API_KEY di Secrets. ' + str(e)[:200])
         return
 
     st.session_state['analisis'] = {'kode': kode, 'harga': harga, 'final': final, 'laporan': laporan}
@@ -472,8 +494,8 @@ def tampil_analisis():
 # ---------- Utama ----------
 st.title('Asisten Trading IDX')
 st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
-if not rahasia('ANTHROPIC_API_KEY'):
-    st.warning('ANTHROPIC_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
+if not kunci():
+    st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
 tab_scan, tab_analisis = st.tabs(['Scanner', 'Analisis satu saham'])
 with tab_scan:
