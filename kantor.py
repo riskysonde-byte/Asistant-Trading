@@ -4,6 +4,7 @@ Angka uang (lot, risiko, untung) selalu dihitung di sini oleh kode, bukan oleh A
 """
 import json
 import math
+import re
 
 import pandas as pd
 
@@ -175,7 +176,7 @@ def kasir(level, modal, risiko_pct, porsi_pct=25):
 
 
 # ---------- Pagar keputusan KOORDINATOR ----------
-def pagar(item, kas):
+def pagar(item, kas, pasar=None, riset=None):
     """Keputusan AI tidak boleh BELI kalau hitungan kode tidak mendukung."""
     putusan = str((item or {}).get('putusan', '')).strip().upper()
     catatan = []
@@ -192,6 +193,12 @@ def pagar(item, kas):
         elif kas['rr'] < RR_MIN:
             putusan = 'TUNGGU'
             catatan.append(f'RR {kas["rr"]} di bawah batas {RR_MIN}')
+    if putusan == 'BELI' and pasar == 'LIBUR':
+        putusan = 'TUNGGU'
+        catatan.append('Cek pasar pagi: LIBUR, hari ini tidak membuka posisi baru')
+    if putusan == 'BELI' and riset == 'HINDARI':
+        putusan = 'TUNGGU'
+        catatan.append('Riset web menilai HINDARI')
     try:
         yakin = int(round(float(item.get('keyakinan'))))
     except (AttributeError, TypeError, ValueError):
@@ -235,3 +242,80 @@ def stat_jurnal(df):
     d['hasil_rp'] = (d['jual'] - d['beli']) * d['lot'] * 100
     return {'total': _ringkas_jurnal(d),
             'per_gaya': {gaya: _ringkas_jurnal(g) for gaya, g in d.groupby('gaya')}}
+
+
+# ---------- Cek pasar pagi / radar / riset ----------
+def kode_valid(v):
+    """Kode saham IDX 4 huruf kapital, atau None."""
+    k = ''.join(c for c in str(v or '').upper() if c.isalnum())
+    return k if len(k) == 4 and k.isalpha() else None
+
+
+def kumpul_kode(*daftar, maks=30):
+    """Kumpulkan kode unik dari beberapa daftar item ({'kode':..}) atau teks."""
+    hasil = []
+    for d in daftar:
+        for x in d or []:
+            k = kode_valid(x.get('kode') if isinstance(x, dict) else x)
+            if k and k not in hasil:
+                hasil.append(k)
+    return hasil[:maks]
+
+
+def bersihkan_pasar(r, jumlah_data):
+    """Rapikan keputusan pasar dari AI dan terapkan pagar yang sama seperti aplikasi asli."""
+    if not isinstance(r, dict):
+        return None
+
+    def daftar(a, n):
+        return [str(x).strip() for x in a if str(x).strip()][:n] if isinstance(a, list) else []
+
+    kd = str(r.get('kondisi', '')).upper()
+    kd = 'RISK-OFF' if 'OFF' in kd else 'RISK-ON' if re.search(r'\bON\b|RISK-ON', kd) else 'NETRAL'
+    kp = str(r.get('keputusan', '')).upper()
+    kp = 'LIBUR' if ('LIBUR' in kp or 'TIDAK' in kp) else 'SELEKTIF' if 'SELEKTIF' in kp else 'TRADING'
+    try:
+        skor = max(0, min(100, int(round(float(r.get('skor'))))))
+    except (TypeError, ValueError):
+        skor = 50
+    catatan = str(r.get('ringkas') or '')[:300]
+    if jumlah_data < 2:
+        if kp == 'TRADING':
+            kp = 'SELEKTIF'
+        catatan = (catatan + ' ' if catatan else '') + 'Data pasar yang terbaca sedikit, hasil kurang kuat.'
+    if kd == 'RISK-OFF' and kp == 'TRADING':
+        kp = 'SELEKTIF'
+    if kd == 'RISK-ON' and kp == 'LIBUR' and skor >= 60:
+        kp = 'SELEKTIF'
+    gaya = []
+    for g in daftar(r.get('gaya_cocok'), 3):
+        n = 'Scalping' if re.search('scalp', g, re.I) else 'Trading' if re.search('trad', g, re.I) else 'Swing' if re.search('swing', g, re.I) else ''
+        if n and n not in gaya:
+            gaya.append(n)
+    if kp == 'LIBUR':
+        gaya = []
+    try:
+        uk = max(0, min(100, int(round(float(r.get('ukuran_posisi_pct')) / 25) * 25)))
+    except (TypeError, ValueError):
+        uk = 50 if kp == 'SELEKTIF' else 100
+    if kp == 'LIBUR':
+        uk = 0
+    if kp == 'SELEKTIF' and uk > 50:
+        uk = 50
+    lv = r.get('level_ihsg')
+    level = None
+    if isinstance(lv, dict):
+        def angka(a):
+            out = []
+            for v in (a if isinstance(a, list) else []):
+                try:
+                    out.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+            return out[:3]
+        level = {'support': angka(lv.get('support')), 'resisten': angka(lv.get('resisten'))}
+        if not (level['support'] or level['resisten']):
+            level = None
+    return {'keputusan': kp, 'kondisi': kd, 'skor': skor, 'gaya': gaya, 'ukuran': uk,
+            'alasan': daftar(r.get('alasan'), 4), 'waspada': daftar(r.get('waspada'), 4),
+            'level': level, 'ringkas': catatan}

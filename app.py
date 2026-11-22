@@ -1,24 +1,22 @@
 """Asisten Trading IDX: Scanner + Analisis satu saham (Streamlit)."""
-import base64
 import concurrent.futures as cf
 import html
 import json
-import time
 
 import pandas as pd
-import requests
 import streamlit as st
 import yfinance as yf
 
 import live
-from agents import PROMPTS, TIM
+from agents import TIM
+from fitur_web import halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
+from gemini import blok_gambar, jalankan, kunci, rahasia
 from kantor import (GAYA, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
                     kasir, kumpul_daftar, level_valid, pagar, per_kode, potong, punya, ringkas_saham,
                     stat_jurnal)
 
 st.set_page_config(page_title='Asisten Trading IDX', layout='wide')
 
-MODEL_DEFAULT = 'gemini-2.5-flash'   # bisa diganti lewat Secrets: GEMINI_MODEL
 STRATEGI = ['Swing Trading', 'Breakout', 'Volume Spike']
 MIN_NILAI_TRANSAKSI = 5_000_000_000   # filter likuiditas: Rp5 miliar per hari
 
@@ -36,27 +34,11 @@ EMITEN = {
 
 
 # ---------- Rahasia (API key & password) ----------
-def rahasia(nama):
-    try:
-        return st.secrets[nama]
-    except Exception:
-        return None
-
-
 sandi = rahasia('APP_PASSWORD')
 if sandi:
     masukan = st.text_input('Password', type='password')
     if masukan != sandi:
         st.stop()
-
-
-def kunci():
-    k = rahasia('GEMINI_API_KEY')
-    return str(k).strip() if k else None
-
-
-def model_ai():
-    return str(rahasia('GEMINI_MODEL') or MODEL_DEFAULT).strip()
 
 
 # ---------- Data ----------
@@ -203,44 +185,6 @@ def pindai(universe, nama, bmap_json='{}'):
 
 
 # ---------- Agen ----------
-def blok_gambar(files):
-    # Ubah screenshot yang diunggah menjadi bagian gambar untuk Gemini.
-    blok = []
-    for f in files or []:
-        tipe = f.type if f.type in ('image/png', 'image/jpeg', 'image/webp') else 'image/png'
-        blok.append({'inline_data': {'mime_type': tipe,
-                                     'data': base64.b64encode(f.getvalue()).decode()}})
-    return blok
-
-
-def jalankan(nama, payload, max_tokens=1200, gambar=None):
-    k = kunci()
-    if not k:
-        raise RuntimeError('GEMINI_API_KEY belum diisi di Secrets')
-    bagian = list(gambar or [])
-    bagian.append({'text': json.dumps(payload, ensure_ascii=False, default=str)})
-    body = {
-        'system_instruction': {'parts': [{'text': PROMPTS[nama]}]},
-        'contents': [{'role': 'user', 'parts': bagian}],
-        'generationConfig': {'maxOutputTokens': max(max_tokens, 2000), 'temperature': 0.3},
-    }
-    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model_ai() + ':generateContent'
-    r = None
-    for percobaan in range(3):
-        r = requests.post(url, headers={'x-goog-api-key': k}, json=body, timeout=90)
-        if r.status_code in (429, 500, 503) and percobaan < 2:
-            time.sleep(4 * (percobaan + 1))
-            continue
-        break
-    if r.status_code != 200:
-        raise RuntimeError('Gemini ' + str(r.status_code) + ': ' + r.text[:200])
-    data = r.json()
-    try:
-        return ''.join(p.get('text', '') for p in data['candidates'][0]['content']['parts'])
-    except Exception:
-        raise RuntimeError('Jawaban Gemini kosong atau diblokir: ' + json.dumps(data)[:200])
-
-
 def ekstrak_broker(files):
     # Baca screenshot broker summary / foreign flow. Persentase dihitung kode, bukan AI.
     if not files:
@@ -695,15 +639,22 @@ def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
 
     # 4. KASIR (hitungan kode)
     status.write('KASIR menghitung lot dan risiko...')
-    kas = {k: kasir(level_valid(lap[k].get('ANALIS') or {}), modal, risiko) for k in paket}
+    pasar = pasar_hari_ini()
+    risiko_ef = risiko * pasar['ukuran'] / 100 if pasar and pasar['ukuran'] > 0 else risiko
+    hasil['pasar'] = {k: pasar[k] for k in ('keputusan', 'kondisi', 'skor', 'ukuran')} if pasar else None
+    hasil['risiko_efektif'] = round(risiko_ef, 2)
+    kas = {k: kasir(level_valid(lap[k].get('ANALIS') or {}), modal, risiko_ef) for k in paket}
+    riset = riset_terbaru()
 
     # 5. KOORDINATOR
     status.write('KOORDINATOR menyusun putusan akhir...')
     kunci_lap = ('ANALIS', 'PENCIUM', 'WARTAWAN', 'DOKTER', 'KALENDER')
     panggilan = {('TIM_KOORDINATOR', i): ('TIM_KOORDINATOR', {
         'saham': [{'kode': k, 'harga': paket[k]['teknikal']['harga'],
-                   **{n: lap[k][n] for n in kunci_lap if n in lap[k]}, 'KASIR': kas[k]} for k in grup],
-        'MAKRO': makro_teks, 'agen_dilewati': list(hasil['dilewati'])}, 6000, None)
+                   **{n: lap[k][n] for n in kunci_lap if n in lap[k]}, 'KASIR': kas[k],
+                   **({'RISET_WEB': {x: riset[k]['r'].get(x) for x in ('putusan_web', 'ringkas', 'poin_minus')}} if k in riset else {})}
+                  for k in grup],
+        'MAKRO': makro_teks, 'agen_dilewati': list(hasil['dilewati']), 'CEK_PASAR': hasil['pasar']}, 6000, None)
         for i, grup in enumerate(potong(paket, 10))}
     jawaban = paralel_aman(panggilan)
     teks_ok = [v for v in jawaban.values() if not isinstance(v, Exception)]
@@ -713,7 +664,9 @@ def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
 
     hasil['makro'] = makro_teks
     hasil['saham'] = {k: {'teknikal': paket[k]['teknikal'], 'lap': lap[k], 'kasir': kas[k],
-                          'putusan': pagar(putusan_ai.get(k), kas[k])} for k in paket}
+                          'putusan': pagar(putusan_ai.get(k), kas[k], pasar['keputusan'] if pasar else None,
+                                           str(riset[k]['r'].get('putusan_web', '')).upper() if k in riset else None)}
+                          for k in paket}
     return hasil
 
 
@@ -736,6 +689,12 @@ def tampil_kantor():
         return
     st.caption(f'Hasil {h["waktu"]:%d-%m-%Y %H:%M} WIB | modal Rp{rupiah(h["modal"])} | risiko {h["risiko"]}% per trade. '
                'Harga Yahoo tertunda sekitar 10-15 menit.')
+    if h.get('pasar'):
+        ps = h['pasar']
+        st.info(f'Cek pasar hari ini: {ps["keputusan"]} ({ps["kondisi"]}, skor {ps["skor"]}). '
+                f'Ukuran posisi {ps["ukuran"]}%, jadi risiko per trade dipakai {h["risiko_efektif"]}%.')
+    else:
+        st.caption('Belum ada Cek pasar hari ini (tab Pasar). Ukuran posisi memakai risiko penuh.')
     if h['gagal_data']:
         st.warning('Data tidak bisa diambil untuk: ' + ', '.join(h['gagal_data']))
     for agen, ket in h['dilewati'].items():
@@ -873,7 +832,10 @@ st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di 
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_live, tab_scan, tab_analisis, tab_kantor = st.tabs(['Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen'])
+tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset = st.tabs(
+    ['Pasar', 'Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen', 'Riset Web'])
+with tab_pasar:
+    halaman_pasar()
 with tab_live:
     halaman_live()
 with tab_scan:
@@ -883,3 +845,5 @@ with tab_analisis:
     tampil_analisis()
 with tab_kantor:
     halaman_kantor()
+with tab_riset:
+    halaman_riset()
