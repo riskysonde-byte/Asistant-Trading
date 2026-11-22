@@ -37,6 +37,25 @@ def status_bursa(now=None):
     return False, 'Bursa tutup'
 
 
+def _pecah(df, kodes):
+    """Pecah hasil yf.download banyak saham menjadi {kode: DataFrame}. Baris tanpa harga dibuang."""
+    hasil = {}
+    if df is None or df.empty:
+        return hasil
+    for k in kodes:
+        t = k + '.JK'
+        if isinstance(df.columns, pd.MultiIndex):
+            if t not in df.columns.get_level_values(0):
+                continue
+            d = df[t]
+        else:
+            d = df
+        d = d.dropna(subset=['Close'])
+        if not d.empty:
+            hasil[k] = d.copy()
+    return hasil
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def get_intraday(kodes, interval='1m'):
     """Bar per menit 5 hari terakhir untuk banyak saham sekaligus (satu permintaan).
@@ -46,28 +65,25 @@ def get_intraday(kodes, interval='1m'):
     kodes = tuple(kodes)
     if not kodes:
         return {}
-    tickers = [k + '.JK' for k in kodes]
-    df = yf.download(tickers, period='5d', interval=interval, auto_adjust=False,
+    df = yf.download([k + '.JK' for k in kodes], period='5d', interval=interval, auto_adjust=False,
                      progress=False, group_by='ticker', threads=True)
-    hasil = {}
-    if df is None or df.empty:
-        return hasil
-    for k, t in zip(kodes, tickers):
-        if isinstance(df.columns, pd.MultiIndex):
-            if t not in df.columns.get_level_values(0):
-                continue
-            d = df[t]
-        else:
-            d = df
-        d = d.dropna(subset=['Close'])
-        if d.empty:
-            continue
-        d = d.copy()
+    hasil = _pecah(df, kodes)
+    for k, d in hasil.items():
         if d.index.tz is None:
             d.index = d.index.tz_localize('UTC')
         d.index = d.index.tz_convert('Asia/Jakarta')
-        hasil[k] = d
     return hasil
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_harian_banyak(kodes, periode='1y'):
+    """Data harian banyak saham sekaligus (satu permintaan). Hasil: {kode: DataFrame}."""
+    kodes = tuple(kodes)
+    if not kodes:
+        return {}
+    df = yf.download([k + '.JK' for k in kodes], period=periode, auto_adjust=False,
+                     progress=False, group_by='ticker', threads=True)
+    return _pecah(df, kodes)
 
 
 def ringkas(d):

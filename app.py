@@ -11,7 +11,10 @@ import streamlit as st
 import yfinance as yf
 
 import live
-from agents import PROMPTS
+from agents import PROMPTS, TIM
+from kantor import (GAYA, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
+                    kasir, kumpul_daftar, level_valid, pagar, per_kode, potong, punya, ringkas_saham,
+                    stat_jurnal)
 
 st.set_page_config(page_title='Asisten Trading IDX', layout='wide')
 
@@ -126,39 +129,7 @@ def get_news(kode):
     return hasil
 
 
-def hitung_lot(modal, risiko_pct, entry, stop, porsi_maks_pct=25):
-    lot_risiko = int(modal * risiko_pct / 100 / ((entry - stop) * 100))
-    lot_porsi = int(modal * porsi_maks_pct / 100 / (entry * 100))
-    return min(lot_risiko, lot_porsi), lot_risiko, lot_porsi
-
-
 # ---------- Hitungan scanner ----------
-def fraksi(h):
-    if h < 200:
-        return 1
-    if h < 500:
-        return 2
-    if h < 2000:
-        return 5
-    if h < 5000:
-        return 10
-    return 25
-
-
-def bulat_bawah(h):
-    f = fraksi(h)
-    return int(h // f * f)
-
-
-def atr(df, n=14):
-    tr = pd.concat([
-        df['High'] - df['Low'],
-        (df['High'] - df['Close'].shift()).abs(),
-        (df['Low'] - df['Close'].shift()).abs(),
-    ], axis=1).max(axis=1)
-    return tr.rolling(n).mean()
-
-
 def umur_tren(d):
     hari = 0
     for ok in reversed((d['Close'] > d['MA20']).tolist()):
@@ -567,13 +538,342 @@ def halaman_live():
     st.fragment(run_every=detik if otomatis else None)(panel)()
 
 
+# ---------- Kantor agen (10 anggota tim) ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_kalender(kode):
+    try:
+        cal = yf.Ticker(kode + '.JK').calendar
+    except Exception:
+        return None
+    if not isinstance(cal, dict) or not cal:
+        return None
+    return {str(k): ', '.join(str(x)[:10] for x in v) if isinstance(v, (list, tuple)) else str(v)[:30]
+            for k, v in cal.items()}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_makro():
+    try:
+        df = yf.download(['^JKSE', 'USDIDR=X'], period='7d', auto_adjust=False, progress=False, group_by='ticker')
+    except Exception:
+        return None
+    hasil = {}
+    for nama, t in (('IHSG', '^JKSE'), ('USDIDR', 'USDIDR=X')):
+        try:
+            c = df[t]['Close'].dropna()
+            hasil[nama] = {'terakhir': round(float(c.iloc[-1]), 2),
+                           'ubah_1_hari_pct': round(float(c.iloc[-1] / c.iloc[-2] - 1) * 100, 2),
+                           'ubah_periode_pct': round(float(c.iloc[-1] / c.iloc[0] - 1) * 100, 2)}
+        except Exception:
+            continue
+    return hasil or None
+
+
+def kumpulkan_data(kodes, auto_fund):
+    """Teknikal (harga terkini) + fundamental/berita/kalender otomatis. Hasil: teknikal, ekstra, gagal."""
+    harian = live.get_harian_banyak(tuple(kodes), '1y')
+    data_live = live.harga_live(kodes)
+    teknikal, gagal = {}, []
+    for k in kodes:
+        try:
+            d = hitung_indikator(live.sambung_live(harian[k], data_live.get(k)))
+            if len(d) < 60 or d['MA50'].isna().iloc[-1]:
+                raise ValueError('data kurang')
+            teknikal[k] = ringkas_saham(k, d)
+        except Exception:
+            gagal.append(k)
+    ekstra = {k: {} for k in teknikal}
+    if auto_fund and teknikal:
+        def ambil(k):
+            return k, get_fundamental(k), get_news(k), get_kalender(k)
+        with cf.ThreadPoolExecutor(max_workers=6) as ex:
+            for k, f, n, c in ex.map(ambil, list(teknikal)):
+                ekstra[k] = {'fundamental': f, 'berita': n, 'kalender': c}
+    return teknikal, ekstra, gagal
+
+
+def paralel_aman(panggilan, maks=4):
+    """panggilan: {kunci: (agen, payload, token, gambar)} -> {kunci: teks atau Exception}. Satu gagal tidak menghentikan yang lain."""
+    def satu(v):
+        agen, payload, token, gambar = v
+        try:
+            return jalankan(agen, payload, token, gambar)
+        except Exception as e:
+            return e
+    with cf.ThreadPoolExecutor(max_workers=maks) as ex:
+        futs = {k: ex.submit(satu, v) for k, v in panggilan.items()}
+        return {k: f.result() for k, f in futs.items()}
+
+
+def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
+    hasil = {'waktu': live.sekarang(), 'dilewati': {}, 'galat': {}, 'modal': modal, 'risiko': risiko}
+
+    status.write('Mengambil data harga terkini...')
+    teknikal, ekstra, gagal = kumpulkan_data(kodes, auto_fund)
+    hasil['gagal_data'] = gagal
+    if not teknikal:
+        raise ValueError('Tidak ada saham yang datanya bisa diambil')
+
+    # 1. PEMBURU: baca screenshot dan teks
+    fakta, makro_unggahan = {}, None
+    gambar = blok_gambar(foto)
+    if gambar or teks_user.strip():
+        status.write('PEMBURU membaca screenshot dan teks...')
+        try:
+            teks = jalankan('TIM_PEMBURU', {'kode_dipantau': list(teknikal), 'teks_pengguna': teks_user or None,
+                                            'screenshot': 'terlampir' if gambar else 'tidak ada'}, 8000, gambar)
+            obj = ambil_json(teks)
+            if isinstance(obj, dict):
+                fakta = per_kode(obj.get('saham') or [])
+                makro_unggahan = obj.get('makro')
+            elif isinstance(obj, list):
+                fakta = per_kode(obj)
+            else:
+                hasil['galat']['PEMBURU'] = 'Jawaban tidak terbaca sebagai JSON'
+        except Exception as e:
+            hasil['galat']['PEMBURU'] = str(e)[:150]
+    else:
+        hasil['dilewati']['PEMBURU'] = 'tidak ada screenshot atau teks yang diunggah'
+
+    # 2. Paket data per saham
+    paket = {}
+    for k, tk in teknikal.items():
+        f, e = fakta.get(k, {}), ekstra.get(k, {})
+        paket[k] = {
+            'teknikal': tk,
+            'broker_asing': {x: f[x] for x in ('broker', 'asing_net') if punya(f.get(x))},
+            'berita': list(e.get('berita') or []) + list(f.get('berita') or []),
+            'fundamental': {**(e.get('fundamental') or {}), **{x: f[x] for x in ('per', 'pbv', 'roe') if punya(f.get(x))}},
+            'jadwal': {**({'kalender_yahoo': e['kalender']} if punya(e.get('kalender')) else {}),
+                       **({'dari_unggahan': f['jadwal']} if punya(f.get('jadwal')) else {})},
+        }
+
+    # 3. Agen paralel
+    status.write('Tim menganalisis ' + str(len(paket)) + ' saham...')
+    panggilan = {}
+    for i, grup in enumerate(potong(paket, 8)):
+        panggilan[('TIM_ANALIS', i)] = ('TIM_ANALIS', {
+            'catatan': 'Harga Yahoo tertunda sekitar 10-15 menit.',
+            'saham': [paket[k]['teknikal'] for k in grup]}, 8000, None)
+    sumber = {'TIM_PENCIUM': 'broker_asing', 'TIM_WARTAWAN': 'berita', 'TIM_DOKTER': 'fundamental', 'TIM_KALENDER': 'jadwal'}
+    for agen, kunci_data in sumber.items():
+        ada = [k for k in paket if punya(paket[k][kunci_data])]
+        if not ada:
+            hasil['dilewati'][agen[4:]] = 'tidak ada data'
+            continue
+        for i, grup in enumerate(potong(ada, 10)):
+            panggilan[(agen, i)] = (agen, {'saham': [
+                {'kode': k, 'harga': paket[k]['teknikal']['harga'], kunci_data: paket[k][kunci_data]} for k in grup]}, 6000, None)
+    data_makro = {'otomatis': get_makro(), 'dari_unggahan': makro_unggahan}
+    if punya(data_makro['otomatis']) or punya(data_makro['dari_unggahan']):
+        panggilan[('TIM_MAKRO', 0)] = ('TIM_MAKRO', data_makro, 3000, None)
+    else:
+        hasil['dilewati']['MAKRO'] = 'tidak ada data'
+    jawaban = paralel_aman(panggilan)
+
+    lap = {k: {} for k in paket}
+    makro_teks = None
+    for agen in ('TIM_ANALIS', 'TIM_PENCIUM', 'TIM_WARTAWAN', 'TIM_DOKTER', 'TIM_KALENDER', 'TIM_MAKRO'):
+        potongan = [v for (a, _), v in sorted(jawaban.items(), key=lambda x: x[0][1]) if a == agen]
+        if not potongan:
+            continue
+        galat = [v for v in potongan if isinstance(v, Exception)]
+        teks_ok = [v for v in potongan if not isinstance(v, Exception)]
+        if galat:
+            hasil['galat'][agen[4:]] = str(galat[0])[:150]
+        if agen == 'TIM_MAKRO':
+            makro_teks = ambil_json(teks_ok[0]) if teks_ok else None
+            if teks_ok and makro_teks is None:
+                makro_teks = {'ringkas': teks_ok[0][:500]}
+            continue
+        item, gagal_baca = kumpul_daftar(teks_ok)
+        if gagal_baca:
+            hasil['galat'][agen[4:]] = hasil['galat'].get(agen[4:], '') + f' {gagal_baca} bagian jawaban tidak terbaca'
+        for kode, x in per_kode(item).items():
+            if kode in lap:
+                lap[kode][agen[4:]] = x
+
+    # 4. KASIR (hitungan kode)
+    status.write('KASIR menghitung lot dan risiko...')
+    kas = {k: kasir(level_valid(lap[k].get('ANALIS') or {}), modal, risiko) for k in paket}
+
+    # 5. KOORDINATOR
+    status.write('KOORDINATOR menyusun putusan akhir...')
+    kunci_lap = ('ANALIS', 'PENCIUM', 'WARTAWAN', 'DOKTER', 'KALENDER')
+    panggilan = {('TIM_KOORDINATOR', i): ('TIM_KOORDINATOR', {
+        'saham': [{'kode': k, 'harga': paket[k]['teknikal']['harga'],
+                   **{n: lap[k][n] for n in kunci_lap if n in lap[k]}, 'KASIR': kas[k]} for k in grup],
+        'MAKRO': makro_teks, 'agen_dilewati': list(hasil['dilewati'])}, 6000, None)
+        for i, grup in enumerate(potong(paket, 10))}
+    jawaban = paralel_aman(panggilan)
+    teks_ok = [v for v in jawaban.values() if not isinstance(v, Exception)]
+    if len(teks_ok) < len(jawaban):
+        hasil['galat']['KOORDINATOR'] = str([v for v in jawaban.values() if isinstance(v, Exception)][0])[:150]
+    putusan_ai = per_kode(kumpul_daftar(teks_ok)[0])
+
+    hasil['makro'] = makro_teks
+    hasil['saham'] = {k: {'teknikal': paket[k]['teknikal'], 'lap': lap[k], 'kasir': kas[k],
+                          'putusan': pagar(putusan_ai.get(k), kas[k])} for k in paket}
+    return hasil
+
+
+def md_laporan(x):
+    if isinstance(x, dict):
+        return '\n'.join(f'- **{k}**: {md_laporan(v)}' if not isinstance(v, (dict, list)) else f'- **{k}**:\n{md_laporan(v)}'
+                         for k, v in x.items() if k != 'kode')
+    if isinstance(x, list):
+        return '\n'.join('  ' + (md_laporan(i) if not isinstance(i, dict) else md_laporan(i).replace('\n', '\n  '))
+                         for i in x)
+    return str(x)
+
+
+IKON = {'BELI': '🟢', 'TUNGGU': '🟡', 'SKIP': '🔴'}
+
+
+def tampil_kantor():
+    h = st.session_state.get('kantor')
+    if not h:
+        return
+    st.caption(f'Hasil {h["waktu"]:%d-%m-%Y %H:%M} WIB | modal Rp{rupiah(h["modal"])} | risiko {h["risiko"]}% per trade. '
+               'Harga Yahoo tertunda sekitar 10-15 menit.')
+    if h['gagal_data']:
+        st.warning('Data tidak bisa diambil untuk: ' + ', '.join(h['gagal_data']))
+    for agen, ket in h['dilewati'].items():
+        st.caption(f'⏭️ {agen} dilewati: {ket}')
+    for agen, ket in h['galat'].items():
+        st.warning(f'{agen} bermasalah: {ket}')
+
+    urutan = sorted(h['saham'].items(), key=lambda kv: (['BELI', 'TUNGGU', 'SKIP'].index(kv[1]['putusan']['putusan']),
+                                                        -kv[1]['putusan']['keyakinan']))
+    baris = []
+    for k, x in urutan:
+        a, ks, p = x['lap'].get('ANALIS') or {}, x['kasir'], x['putusan']
+        baris.append({
+            'Kode': k, 'Putusan': IKON[p['putusan']] + ' ' + p['putusan'], 'Yakin': f'{p["keyakinan"]}/10',
+            'Gaya': a.get('gaya') or '-', 'Harga': rupiah(x['teknikal']['harga']),
+            'Zona beli': rupiah(ks['entry']) if ks else '-', 'TP': rupiah(ks['tp']) if ks else '-',
+            'SL': rupiah(ks['sl']) if ks else '-', 'RR': str(ks['rr']) if ks else '-', 'Lot': str(ks['lot']) if ks else '-',
+            'Nilai (Rp)': rupiah(ks['nilai']) if ks else '-', 'Risiko (Rp)': rupiah(ks['risiko_rp']) if ks else '-',
+        })
+    st.dataframe(pd.DataFrame(baris), hide_index=True, width='stretch')
+
+    if h.get('makro'):
+        with st.expander('MAKRO: kondisi pasar'):
+            st.markdown(md_laporan(h['makro']))
+    for k, x in urutan:
+        p, ks = x['putusan'], x['kasir']
+        with st.expander(f'{IKON[p["putusan"]]} {k}: {p["putusan"]} ({p["keyakinan"]}/10)'):
+            if p['alasan']:
+                st.write(p['alasan'])
+            if p['peringatan']:
+                st.warning(p['peringatan'])
+            if p['catatan_sistem']:
+                st.caption('Catatan sistem: ' + p['catatan_sistem'])
+            if ks:
+                st.markdown(f'**KASIR** (dihitung kode): zona beli sampai Rp{rupiah(ks["entry"])}, SL Rp{rupiah(ks["sl"])}, '
+                            f'TP Rp{rupiah(ks["tp"])}, RR {ks["rr"]}. **{ks["lot"]} lot** = Rp{rupiah(ks["nilai"])}; '
+                            f'rugi jika kena SL Rp{rupiah(ks["risiko_rp"])}, untung jika kena TP Rp{rupiah(ks["untung_rp"])}. '
+                            f'Pembatas lot: {ks["pembatas"]}.')
+            for nama, isi in x['lap'].items():
+                st.markdown(f'**{nama}**')
+                st.markdown(md_laporan(isi))
+
+
+def halaman_jurnal():
+    if 'jurnal' not in st.session_state:
+        st.session_state['jurnal'] = pd.DataFrame(columns=KOLOM_JURNAL)
+    st.caption('Catat trade yang sudah selesai. Streamlit tidak menyimpan data permanen, jadi unduh CSV-nya '
+               'dan muat lagi lain kali.')
+    up = st.file_uploader('Muat jurnal (CSV)', type=['csv'], key='jurnal_csv')
+    if up is not None and st.session_state.get('jurnal_token') != (up.name, up.size):
+        try:
+            muat = pd.read_csv(up)
+            st.session_state['jurnal'] = muat.reindex(columns=KOLOM_JURNAL)
+            st.session_state['jurnal_token'] = (up.name, up.size)
+        except Exception as e:
+            st.error('CSV tidak terbaca: ' + str(e)[:120])
+    with st.form('jurnal_form', clear_on_submit=True):
+        c = st.columns(5)
+        kode = c[0].text_input('Kode')
+        gaya = c[1].selectbox('Gaya', GAYA)
+        beli = c[2].number_input('Harga beli', min_value=0, step=1)
+        jual = c[3].number_input('Harga jual', min_value=0, step=1)
+        lot = c[4].number_input('Lot', min_value=0, step=1)
+        if st.form_submit_button('Tambah ke jurnal'):
+            if kode.strip() and beli > 0 and lot > 0:
+                baru = pd.DataFrame([{'tanggal': live.sekarang().strftime('%Y-%m-%d'), 'kode': kode.strip().upper(),
+                                      'gaya': gaya, 'beli': beli, 'jual': jual, 'lot': lot}])
+                st.session_state['jurnal'] = pd.concat([st.session_state['jurnal'], baru], ignore_index=True)
+            else:
+                st.warning('Isi kode, harga beli, dan lot.')
+    jurnal = st.session_state['jurnal']
+    stat = stat_jurnal(jurnal)
+    if stat is None:
+        st.info('Jurnal masih kosong.')
+        return
+    st.dataframe(jurnal, hide_index=True, width='stretch')
+    st.download_button('Unduh jurnal (CSV)', jurnal.to_csv(index=False), 'jurnal_trading.csv', 'text/csv')
+    t = stat['total']
+    m1, m2, m3 = st.columns(3)
+    m1.metric('Win rate', f'{t["win_rate_pct"]}%', f'{t["jumlah_trade"]} trade')
+    m2.metric('Rata-rata hasil', f'{t["rata_hasil_pct"]}%')
+    m3.metric('Total', 'Rp' + rupiah(t['total_rp']))
+    st.dataframe(pd.DataFrame(stat['per_gaya']).T, width='stretch')
+    if st.button('Minta PELATIH mengulas', key='btn_pelatih'):
+        try:
+            with st.spinner('PELATIH membaca jurnalmu...'):
+                st.session_state['pelatih'] = jalankan('TIM_PELATIH', {
+                    'statistik': stat, 'trade_terakhir': jurnal.tail(30).to_dict('records')}, 3000)
+        except Exception as e:
+            st.error('PELATIH gagal: ' + str(e)[:200])
+    if st.session_state.get('pelatih'):
+        st.markdown(st.session_state['pelatih'])
+
+
+def halaman_kantor():
+    with st.expander('Anggota tim (10 agen)'):
+        for nama, tugas in TIM:
+            st.markdown(f'**{nama}**: {tugas}')
+
+    daftar = st.text_area('Saham yang dipantau (pisahkan koma, maksimal ' + str(MAKS_SAHAM) + ')',
+                          ','.join(EMITEN), key='kantor_daftar')
+    kodes = list(dict.fromkeys(k.strip().upper() for k in daftar.split(',') if k.strip()))
+    if len(kodes) > MAKS_SAHAM:
+        st.warning(f'Hanya {MAKS_SAHAM} saham pertama yang dipakai.')
+        kodes = kodes[:MAKS_SAHAM]
+    c1, c2 = st.columns(2)
+    modal = c1.number_input('Modal (Rp)', value=100_000_000, step=1_000_000, key='kantor_modal')
+    risiko = c2.number_input('Batas risiko per trade (% modal)', value=1.0, min_value=0.1, max_value=5.0, step=0.1)
+    foto = st.file_uploader('Screenshot (broker summary, berita, fundamental, makro, jadwal). Opsional, banyak sekaligus',
+                            type=['png', 'jpg', 'jpeg', 'webp'], accept_multiple_files=True, key='kantor_foto')
+    teks_user = st.text_area('Teks tambahan (berita, catatan broker, jadwal, kondisi pasar). Opsional', key='kantor_teks')
+    auto_fund = st.checkbox('Ambil fundamental, berita, dan jadwal otomatis dari Yahoo', value=True)
+
+    if st.button('Jalankan kantor agen', key='btn_kantor', type='primary'):
+        if not kunci():
+            st.error('GEMINI_API_KEY belum diisi di Secrets.')
+        elif not kodes:
+            st.warning('Isi minimal satu kode saham.')
+        else:
+            with st.status('Kantor agen bekerja...', expanded=True) as status:
+                try:
+                    st.session_state['kantor'] = jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status)
+                    status.update(label='Selesai', state='complete', expanded=False)
+                except Exception as e:
+                    status.update(label='Gagal', state='error')
+                    st.error('Kantor agen gagal: ' + str(e)[:200])
+    tampil_kantor()
+    with st.expander('Jurnal trading dan PELATIH'):
+        halaman_jurnal()
+
+
 # ---------- Utama ----------
 st.title('Asisten Trading IDX')
 st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_live, tab_scan, tab_analisis = st.tabs(['Live', 'Scanner', 'Analisis satu saham'])
+tab_live, tab_scan, tab_analisis, tab_kantor = st.tabs(['Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen'])
 with tab_live:
     halaman_live()
 with tab_scan:
@@ -581,3 +881,5 @@ with tab_scan:
 with tab_analisis:
     halaman_analisis()
     tampil_analisis()
+with tab_kantor:
+    halaman_kantor()
