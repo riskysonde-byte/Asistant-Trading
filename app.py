@@ -9,9 +9,10 @@ import yfinance as yf
 
 import live
 from agents import TIM
+from arena import halaman_arena, halaman_tanya
 from fitur_web import halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci, rahasia
-from kantor import (GAYA, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
+from kantor import (GAYA, hitung_indikator, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
                     kasir, kumpul_daftar, level_valid, pagar, per_kode, potong, punya, ringkas_saham,
                     stat_jurnal)
 
@@ -58,22 +59,6 @@ def get_ohlcv_live(kode, periode='1y', data_live=None):
     if data_live is None:
         data_live = live.harga_live((kode,))
     return live.sambung_live(df, data_live.get(kode))
-
-
-def hitung_indikator(df):
-    d = df.copy()
-    d['MA20'] = d['Close'].rolling(20).mean()
-    d['MA50'] = d['Close'].rolling(50).mean()
-    d['VOL_MA20'] = d['Volume'].rolling(20).mean()
-    delta = d['Close'].diff()
-    naik = delta.clip(lower=0).rolling(14).mean()
-    turun = (-delta.clip(upper=0)).rolling(14).mean()
-    d['RSI14'] = 100 - 100 / (1 + naik / turun)
-    ema12 = d['Close'].ewm(span=12).mean()
-    ema26 = d['Close'].ewm(span=26).mean()
-    d['MACD'] = ema12 - ema26
-    d['MACD_SIGNAL'] = d['MACD'].ewm(span=9).mean()
-    return d
 
 
 def get_broker_summary(kode):
@@ -832,8 +817,8 @@ st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di 
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset = st.tabs(
-    ['Pasar', 'Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen', 'Riset Web'])
+tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena = st.tabs(
+    ['Pasar', 'Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen', 'Riset Web', 'Tanya AI', 'Arena'])
 with tab_pasar:
     halaman_pasar()
 with tab_live:
@@ -847,3 +832,7 @@ with tab_kantor:
     halaman_kantor()
 with tab_riset:
     halaman_riset()
+with tab_tanya:
+    halaman_tanya()
+with tab_arena:
+    halaman_arena()

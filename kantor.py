@@ -48,6 +48,22 @@ def atr(df, n=14):
 
 
 # ---------- Ringkasan data teknikal untuk agen ----------
+def hitung_indikator(df):
+    d = df.copy()
+    d['MA20'] = d['Close'].rolling(20).mean()
+    d['MA50'] = d['Close'].rolling(50).mean()
+    d['VOL_MA20'] = d['Volume'].rolling(20).mean()
+    delta = d['Close'].diff()
+    naik = delta.clip(lower=0).rolling(14).mean()
+    turun = (-delta.clip(upper=0)).rolling(14).mean()
+    d['RSI14'] = 100 - 100 / (1 + naik / turun)
+    ema12 = d['Close'].ewm(span=12).mean()
+    ema26 = d['Close'].ewm(span=26).mean()
+    d['MACD'] = ema12 - ema26
+    d['MACD_SIGNAL'] = d['MACD'].ewm(span=9).mean()
+    return d
+
+
 def _angka(v, nd=2):
     try:
         f = float(v)
@@ -319,3 +335,28 @@ def bersihkan_pasar(r, jumlah_data):
     return {'keputusan': kp, 'kondisi': kd, 'skor': skor, 'gaya': gaya, 'ukuran': uk,
             'alasan': daftar(r.get('alasan'), 4), 'waspada': daftar(r.get('waspada'), 4),
             'level': level, 'ringkas': catatan}
+
+
+# ---------- Sidang saham ----------
+def bersihkan_sidang(res):
+    """Rapikan naskah sidang dari AI. None jika tidak ada ronde."""
+    if not isinstance(res, dict):
+        return None
+    ronde = []
+    for x in (res.get('ronde') if isinstance(res.get('ronde'), list) else [])[:3]:
+        if isinstance(x, dict) and (x.get('banteng') or x.get('beruang')):
+            ronde.append({'banteng': str(x.get('banteng') or '-')[:360], 'beruang': str(x.get('beruang') or '-')[:360]})
+    if not ronde:
+        return None
+    h = res.get('hakim') if isinstance(res.get('hakim'), dict) else {}
+    pt = str(h.get('putusan', ''))
+    put = 'BELI' if re.search('BELI', pt, re.I) else 'SKIP' if re.search('SKIP|HINDARI', pt, re.I) else 'TUNGGU'
+    sk = res.get('skor') if isinstance(res.get('skor'), dict) else {}
+
+    def nilai(v):
+        try:
+            return max(0.0, min(10.0, float(v)))
+        except (TypeError, ValueError):
+            return 5.0
+    return {'ronde': ronde, 'putusan': put, 'alasan': str(h.get('alasan') or '')[:420],
+            'syarat': str(h.get('syarat') or '')[:200], 'banteng': nilai(sk.get('banteng')), 'beruang': nilai(sk.get('beruang'))}
