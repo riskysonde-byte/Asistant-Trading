@@ -10,6 +10,7 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import live
 from agents import PROMPTS
 
 st.set_page_config(page_title='Asisten Trading IDX', layout='wide')
@@ -64,6 +65,14 @@ def get_ohlcv(kode, periode='1y'):
         raise ValueError('Data ' + kode + ' tidak ditemukan')
     df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
     return df
+
+
+def get_ohlcv_live(kode, periode='1y', data_live=None):
+    """Data harian + bar hari ini diperbarui dari data per menit (kalau tersedia)."""
+    df = get_ohlcv(kode, periode)
+    if data_live is None:
+        data_live = live.harga_live((kode,))
+    return live.sambung_live(df, data_live.get(kode))
 
 
 def hitung_indikator(df):
@@ -187,13 +196,14 @@ def info_broker(kode, bmap=None):
     return {'kode': top['broker'], 'persen': round(float(top['net'] / beli['net'].sum() * 100), 1)}
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def pindai(universe, nama, bmap_json='{}'):
     bmap = json.loads(bmap_json)
+    data_live = live.harga_live(universe)   # satu permintaan untuk semua saham
     hasil = []
     for kode in universe:
         try:
-            d = hitung_indikator(get_ohlcv(kode, '6mo'))
+            d = hitung_indikator(get_ohlcv_live(kode, '6mo', data_live))
         except Exception:
             continue
         if len(d) < 60 or d['MA50'].isna().iloc[-1]:
@@ -431,15 +441,21 @@ def halaman_analisis():
         return
 
     try:
-        d = hitung_indikator(get_ohlcv(kode))
+        data_live = live.harga_live((kode,))
+        d = hitung_indikator(get_ohlcv_live(kode, '1y', data_live))
     except Exception as e:
         st.error('Data saham gagal diambil: ' + str(e)[:150])
         return
 
     harga = float(d['Close'].iloc[-1])
     tgl = d.index[-1]
-    st.caption(f'{kode}: Rp{rupiah(harga)} | data bar terakhir {tgl:%d-%m-%Y}. '
-               'Sumber Yahoo Finance, bisa telat sekitar 10 menit dan tidak resmi.')
+    lv = data_live.get(kode)
+    if lv:
+        st.caption(f'{kode}: Rp{rupiah(harga)} ({lv["ubah_pct"]:+.2f}%) | update {lv["waktu"]:%d-%m-%Y %H:%M} WIB. '
+                   'Sumber Yahoo Finance, tertunda sekitar 10-15 menit dan tidak resmi.')
+    else:
+        st.caption(f'{kode}: Rp{rupiah(harga)} | data bar terakhir {tgl:%d-%m-%Y}. '
+                   'Data per menit tidak tersedia; sumber Yahoo Finance, tidak resmi.')
 
     ringkas = d.dropna().tail(60).round(2).to_dict('records')
     gambar = blok_gambar(foto)
@@ -491,13 +507,75 @@ def tampil_analisis():
             st.write(isi)
 
 
+def tabel_live(data):
+    baris = []
+    for k, x in data.items():
+        baris.append({
+            'Kode': k, 'Nama': EMITEN.get(k, ''), 'Harga': x['harga'],
+            'Ubah': x['ubah'], 'Ubah %': x['ubah_pct'], 'Open': x['open'],
+            'High': x['high'], 'Low': x['low'], 'Volume (lot)': x['volume'] / 100,
+            'Update': x['waktu'].strftime('%H:%M'),
+        })
+    df = pd.DataFrame(baris).sort_values('Ubah %', ascending=False)
+
+    def warna(v):
+        if v > 0:
+            return 'color: #16a34a'
+        if v < 0:
+            return 'color: #dc2626'
+        return ''
+
+    return df.style.map(warna, subset=['Ubah', 'Ubah %']).format({
+        'Harga': rupiah, 'Ubah': lambda v: f'{v:+,.0f}'.replace(',', '.'),
+        'Ubah %': '{:+.2f}%', 'Open': rupiah, 'High': rupiah, 'Low': rupiah,
+        'Volume (lot)': rupiah,
+    })
+
+
+def halaman_live():
+    daftar = st.text_area('Watchlist (pisahkan koma)', ','.join(EMITEN), key='watchlist')
+    kodes = tuple(dict.fromkeys(k.strip().upper() for k in daftar.split(',') if k.strip()))
+    c1, c2 = st.columns(2)
+    otomatis = c1.toggle('Refresh otomatis', value=True)
+    detik = c2.selectbox('Setiap', [15, 30, 60, 120], index=1, format_func=lambda s: f'{s} detik')
+
+    def panel():
+        buka, ket = live.status_bursa()
+        now = live.sekarang()
+        st.caption(f'{"🟢" if buka else "⚪"} {ket} | dicek {now:%H:%M:%S} WIB | '
+                   'Yahoo Finance, tertunda sekitar 10-15 menit, tidak resmi.')
+        data = live.harga_live(kodes)
+        if not data:
+            st.warning('Data per menit belum bisa diambil. Coba lagi sebentar.')
+            return
+        gagal = [k for k in kodes if k not in data]
+        if gagal:
+            st.caption('Tidak ada data untuk: ' + ', '.join(gagal))
+        st.dataframe(tabel_live(data), hide_index=True, width='stretch')
+
+        pilih = st.selectbox('Grafik hari ini', list(data), key='live_pilih')
+        x = data[pilih]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(pilih, 'Rp' + rupiah(x['harga']), f'{x["ubah_pct"]:+.2f}%')
+        m2.metric('High / Low', f'{rupiah(x["high"])} / {rupiah(x["low"])}')
+        m3.metric('Volume', rupiah(x['volume'] / 100) + ' lot')
+        m4.metric('Bar terakhir', f'{x["waktu"]:%d-%m %H:%M} WIB')
+        grafik = x['bar'][['Close']].rename(columns={'Close': pilih})
+        grafik.index = grafik.index.tz_localize(None)
+        st.line_chart(grafik, height=280)
+
+    st.fragment(run_every=detik if otomatis else None)(panel)()
+
+
 # ---------- Utama ----------
 st.title('Asisten Trading IDX')
 st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_scan, tab_analisis = st.tabs(['Scanner', 'Analisis satu saham'])
+tab_live, tab_scan, tab_analisis = st.tabs(['Live', 'Scanner', 'Analisis satu saham'])
+with tab_live:
+    halaman_live()
 with tab_scan:
     halaman_scanner()
 with tab_analisis:
