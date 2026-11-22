@@ -6,7 +6,7 @@ import time
 import requests
 import streamlit as st
 
-from agents import PROMPTS
+from tim_agen import PROMPTS
 
 MODEL_DEFAULT = 'gemini-2.5-flash'   # bisa diganti lewat Secrets: GEMINI_MODEL
 

@@ -8,7 +8,7 @@ import streamlit as st
 import yfinance as yf
 
 import live
-from agents import TIM
+from tim_agen import TIM
 from arena import halaman_arena, halaman_tanya
 from fitur_web import halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci, rahasia
