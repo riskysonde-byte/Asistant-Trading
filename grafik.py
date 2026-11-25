@@ -3,8 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-NAIK = '#16a34a'
-TURUN = '#dc2626'
+NAIK = '#00AB6B'
+TURUN = '#E5484D'
 BIRU = '#3b82f6'
 UNGU = '#a855f7'
 ORANYE = '#f59e0b'

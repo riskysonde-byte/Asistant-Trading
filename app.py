@@ -9,15 +9,16 @@ import yfinance as yf
 
 import grafik
 import live
+import tema
 from tim_agen import TIM
 from arena import halaman_arena, halaman_tanya
-from fitur_web import halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
+from fitur_web import get_pasar_dunia, halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci, rahasia
 from kantor import (GAYA, hitung_indikator, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
                     kasir, kumpul_daftar, level_valid, pagar, per_kode, potong, punya, ringkas_saham,
                     stat_jurnal)
 
-st.set_page_config(page_title='Asisten Trading IDX', layout='wide')
+st.set_page_config(page_title='Asisten Trading IDX', page_icon='📈', layout='wide')
 
 STRATEGI = ['Swing Trading', 'Breakout', 'Volume Spike']
 MIN_NILAI_TRANSAKSI = 5_000_000_000   # filter likuiditas: Rp5 miliar per hari
@@ -434,17 +435,15 @@ def tabel_live(data):
 
 
 def halaman_live():
-    daftar = st.text_area('Watchlist (pisahkan koma)', ','.join(EMITEN), key='watchlist')
+    with st.expander('⚙️ Atur watchlist dan refresh'):
+        daftar = st.text_area('Watchlist (pisahkan koma)', ','.join(EMITEN), key='watchlist')
+        c1, c2 = st.columns(2)
+        otomatis = c1.toggle('Refresh otomatis', value=True)
+        detik = c2.selectbox('Setiap', [15, 30, 60, 120], index=1, format_func=lambda s: f'{s} detik')
     kodes = tuple(dict.fromkeys(k.strip().upper() for k in daftar.split(',') if k.strip()))
-    c1, c2 = st.columns(2)
-    otomatis = c1.toggle('Refresh otomatis', value=True)
-    detik = c2.selectbox('Setiap', [15, 30, 60, 120], index=1, format_func=lambda s: f'{s} detik')
 
     def panel():
-        buka, ket = live.status_bursa()
-        now = live.sekarang()
-        st.caption(f'{"🟢" if buka else "⚪"} {ket} | dicek {now:%H:%M:%S} WIB | '
-                   'Yahoo Finance, tertunda sekitar 10-15 menit, tidak resmi.')
+        st.caption(f'Diperbarui {live.sekarang():%H:%M:%S} WIB')
         data = live.harga_live(kodes)
         if not data:
             st.warning('Data per menit belum bisa diambil. Coba lagi sebentar.')
@@ -452,15 +451,15 @@ def halaman_live():
         gagal = [k for k in kodes if k not in data]
         if gagal:
             st.caption('Tidak ada data untuk: ' + ', '.join(gagal))
-        st.dataframe(tabel_live(data), hide_index=True, width='stretch')
-
-        pilih = st.selectbox('Grafik', list(data), key='live_pilih')
+        pilih = st.session_state.get('live_pil') or next(iter(data))
+        if pilih not in data:
+            pilih = next(iter(data))
+        tema.watchlist(data, EMITEN, pilih)
+        with st.expander('Detail tabel (Open, High, Low, Volume)'):
+            st.dataframe(tabel_live(data), hide_index=True, width='stretch')
+        pilih = st.pills('Pilih saham untuk grafik', list(data), selection_mode='single', default=next(iter(data)), key='live_pil') or pilih
         x = data[pilih]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(pilih, 'Rp' + rupiah(x['harga']), f'{x["ubah_pct"]:+.2f}%')
-        m2.metric('High / Low', f'{rupiah(x["high"])} / {rupiah(x["low"])}')
-        m3.metric('Volume', rupiah(x['volume'] / 100) + ' lot')
-        m4.metric('Bar terakhir', f'{x["waktu"]:%d-%m %H:%M} WIB')
+        tema.statistik(pilih, x)
 
         g1, g2, g3 = st.columns(3)
         mode = g1.segmented_control('Tampilan', ['Intraday', 'Harian'], default='Intraday', key='grafik_mode')
@@ -831,13 +830,14 @@ def halaman_kantor():
 
 
 # ---------- Utama ----------
-st.title('Asisten Trading IDX')
-st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
+tema.terapkan()
+tema.header(*live.status_bursa())
+tema.bar_pasar(get_pasar_dunia())
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
 tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena = st.tabs(
-    ['Pasar', 'Live', 'Scanner', 'Analisis satu saham', 'Kantor Agen', 'Riset Web', 'Tanya AI', 'Arena'])
+    ['🌅 Pasar', '📈 Live', '🔍 Scanner', '🧪 Analisis', '🏢 Kantor Agen', '🌐 Riset Web', '💬 Tanya AI', '⚔️ Arena'])
 with tab_pasar:
     halaman_pasar()
 with tab_live:
@@ -855,3 +855,5 @@ with tab_tanya:
     halaman_tanya()
 with tab_arena:
     halaman_arena()
+
+st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
