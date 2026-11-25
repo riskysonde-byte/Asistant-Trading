@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+import grafik
 import live
 from tim_agen import TIM
 from arena import halaman_arena, halaman_tanya
@@ -453,16 +454,34 @@ def halaman_live():
             st.caption('Tidak ada data untuk: ' + ', '.join(gagal))
         st.dataframe(tabel_live(data), hide_index=True, width='stretch')
 
-        pilih = st.selectbox('Grafik hari ini', list(data), key='live_pilih')
+        pilih = st.selectbox('Grafik', list(data), key='live_pilih')
         x = data[pilih]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric(pilih, 'Rp' + rupiah(x['harga']), f'{x["ubah_pct"]:+.2f}%')
         m2.metric('High / Low', f'{rupiah(x["high"])} / {rupiah(x["low"])}')
         m3.metric('Volume', rupiah(x['volume'] / 100) + ' lot')
         m4.metric('Bar terakhir', f'{x["waktu"]:%d-%m %H:%M} WIB')
-        grafik = x['bar'][['Close']].rename(columns={'Close': pilih})
-        grafik.index = grafik.index.tz_localize(None)
-        st.line_chart(grafik, height=280)
+
+        g1, g2, g3 = st.columns(3)
+        mode = g1.segmented_control('Tampilan', ['Intraday', 'Harian'], default='Intraday', key='grafik_mode')
+        if mode == 'Harian':
+            try:
+                df = live.sambung_live(live.get_harian_banyak((pilih,), '1y')[pilih], x)
+                fig = grafik.candle(df, pilih, intraday=False, ma=(20, 50), kunci_ui=pilih + 'H', tampil_n=130)
+            except Exception:
+                st.info('Data harian belum bisa diambil.')
+                return
+        else:
+            menit = g2.segmented_control('Interval', [1, 5, 15], default=5, format_func=lambda m: f'{m} mnt', key='grafik_tf') or 5
+            rentang = g3.segmented_control('Rentang', ['Hari ini', '5 hari'], default='Hari ini', key='grafik_rentang') or 'Hari ini'
+            bar = live.get_intraday(kodes).get(pilih)
+            if bar is None:
+                st.info('Data per menit belum tersedia.')
+                return
+            mulai = bar.index[bar.index.date == x['tanggal']][0].tz_localize(None) if rentang == 'Hari ini' else None
+            fig = grafik.candle(grafik.resample_ohlcv(bar, menit), pilih, prev_close=x['prev'], mulai=mulai,
+                                kunci_ui=f'{pilih}-{menit}-{rentang}')
+        st.plotly_chart(fig, width='stretch', config=grafik.CONFIG, key='grafik_live')
 
     st.fragment(run_every=detik if otomatis else None)(panel)()
 
