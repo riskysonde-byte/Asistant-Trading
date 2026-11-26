@@ -10,13 +10,10 @@ import grafik
 import live
 import simulasi as sm
 from fitur_web import pasar_hari_ini
-from kantor import stat_jurnal
+from kantor import hitung_indikator, ringkas_saham, skor_bull, stat_jurnal
 from tema import angka, persen
-from tim_agen import TIM
 
-AGEN = [n for n, _ in TIM]
-WARNA_STATUS = {'aktif': '#00FF9C', 'lewat': '#6B7280', 'galat': '#FF4D4F', 'idle': '#22D3EE'}
-KET_STATUS = {'aktif': 'AKTIF', 'lewat': 'DILEWATI', 'galat': 'GALAT', 'idle': 'SIAGA'}
+WARNA_BOLA = {'BULLISH': '#00FF9C', 'NETRAL': '#F5B342', 'BEARISH': '#FF4D4F'}
 HARI = ['SEN', 'SEL', 'RAB', 'KAM', 'JUM', 'SAB', 'MIN']
 
 CSS = """
@@ -48,70 +45,6 @@ CSS = """
 </style>
 """
 
-BOLA = """
-<canvas id="c" style="width:100%;height:330px;display:block"></canvas>
-<script>
-const AG = __AGEN__;
-const WARNA = __WARNA__;
-const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let W = 0, H = 0; const DPR = window.devicePixelRatio || 1;
-function fit(){ W = cv.clientWidth; H = cv.clientHeight; cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
-fit(); addEventListener('resize', fit);
-const N = 850, P = [], GA = Math.PI*(3-Math.sqrt(5));
-for (let i = 0; i < N; i++){ const y = 1-2*(i+.5)/N, r = Math.sqrt(1-y*y), th = GA*i; P.push([Math.cos(th)*r, y, Math.sin(th)*r, Math.random()*6.28]); }
-const NODE = AG.map((a,i) => { const y = 1-2*(i+.5)/AG.length, r = Math.sqrt(1-y*y), th = GA*i*1.7; return {a, p:[Math.cos(th)*r, y, Math.sin(th)*r]}; });
-const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let ang = 0;
-function rot(p, ay, ax){ const x = p[0]*Math.cos(ay)+p[2]*Math.sin(ay), z = -p[0]*Math.sin(ay)+p[2]*Math.cos(ay), y = p[1];
-  return [x, y*Math.cos(ax)-z*Math.sin(ax), y*Math.sin(ax)+z*Math.cos(ax)]; }
-function proj(q, R){ const s = 3.2/(3.2+q[2]*0.9); return [W/2+q[0]*R*s, H/2+q[1]*R*s, s]; }
-function frame(t){
-  ctx.clearRect(0,0,W,H); const R = Math.min(W,H)*0.36;
-  const g = ctx.createRadialGradient(W/2,H/2,R*0.1,W/2,H/2,R*1.3); g.addColorStop(0,'rgba(0,255,156,0.08)'); g.addColorStop(1,'rgba(0,0,0,0)');
-  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
-  const ay = reduce ? 0.6 : ang, ax = 0.35;
-  for (const p of P){ const q = rot(p,ay,ax), s = proj(q,R), d = (q[2]+1)/2, tw = 0.6+0.4*Math.sin(t/700+p[3]);
-    ctx.fillStyle = 'rgba(120,255,214,'+(0.12+0.55*d*tw).toFixed(3)+')'; const z = 1.2*s[2]+0.3; ctx.fillRect(s[0],s[1],z,z); }
-  const pts = NODE.map(n => ({n, q: rot(n.p,ay,ax)}));
-  ctx.lineWidth = 0.7;
-  for (let i = 0; i < pts.length; i++) for (let j = i+1; j < pts.length; j++){
-    if (pts[i].n.a.s === 'aktif' && pts[j].n.a.s === 'aktif'){
-      const A = proj(pts[i].q,R*1.12), B = proj(pts[j].q,R*1.12), d = (pts[i].q[2]+pts[j].q[2]+2)/4;
-      ctx.strokeStyle = 'rgba(0,255,156,'+(0.05+0.2*d).toFixed(3)+')'; ctx.beginPath(); ctx.moveTo(A[0],A[1]); ctx.lineTo(B[0],B[1]); ctx.stroke(); } }
-  pts.sort((a,b) => a.q[2]-b.q[2]);
-  for (const {n,q} of pts){
-    const s = proj(q,R*1.12), col = WARNA[n.a.s] || WARNA.idle, front = q[2] > -0.15;
-    const pulse = n.a.s === 'aktif' ? 1+0.35*Math.sin(t/260+n.p[1]*5) : 1;
-    ctx.globalAlpha = front ? 1 : 0.35; ctx.shadowColor = col; ctx.shadowBlur = n.a.s === 'aktif' ? 14 : 6; ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(s[0],s[1],4.2*s[2]*pulse,0,6.283); ctx.fill(); ctx.shadowBlur = 0;
-    if (front){ ctx.font = '600 10px ui-monospace,Menlo,monospace'; ctx.textAlign = s[0] > W/2 ? 'left' : 'right';
-      ctx.fillText(n.a.n, s[0]+(s[0] > W/2 ? 9 : -9), s[1]+3); }
-    ctx.globalAlpha = 1; }
-  if (!reduce){ ang += 0.0035; requestAnimationFrame(frame); }
-}
-requestAnimationFrame(frame);
-</script>
-"""
-
-
-def status_agen():
-    """Status tiap agen dari hasil Kantor Agen terakhir: aktif, lewat, galat, atau idle (siaga)."""
-    h = st.session_state.get('kantor')
-    if not h:
-        return {n: 'idle' for n in AGEN}
-    s = {}
-    for n in AGEN:
-        if n in h['galat']:
-            s[n] = 'galat'
-        elif n in h['dilewati']:
-            s[n] = 'lewat'
-        elif n == 'PELATIH':
-            s[n] = 'aktif' if st.session_state.get('pelatih') else 'idle'
-        else:
-            s[n] = 'aktif'
-    return s
-
-
 def bar_status():
     now = live.sekarang()
     buka, ket = live.status_bursa(now)
@@ -130,14 +63,104 @@ def panel_judul(judul, kanan=''):
     st.markdown(f'<div class="tm-h"><span>▍{html.escape(judul)}</span><i>{html.escape(kanan)}</i></div>', unsafe_allow_html=True)
 
 
-def bola_agen():
-    status = status_agen()
-    agen = [{'n': n, 's': status[n]} for n in AGEN]
-    components.html(BOLA.replace('__AGEN__', json.dumps(agen)).replace('__WARNA__', json.dumps(WARNA_STATUS)), height=335)
-    hitung = {k: sum(1 for v in status.values() if v == k) for k in WARNA_STATUS}
-    st.markdown('<div class="tm-lg">' + ''.join(
-        f'<span><i style="background:{WARNA_STATUS[k]}"></i>{KET_STATUS[k]} {hitung[k]}</span>' for k in WARNA_STATUS) + '</div>',
-        unsafe_allow_html=True)
+BOLA = """
+<canvas id="c" style="width:100%;height:340px;display:block;cursor:crosshair"></canvas>
+<script>
+const D = __DATA__;
+const WARNA = __WARNA__;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W = 0, H = 0; const DPR = window.devicePixelRatio || 1;
+function fit(){ W = cv.clientWidth; H = cv.clientHeight; cv.width = W*DPR; cv.height = H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+fit(); addEventListener('resize', () => { fit(); if (reduce) frame(0); });
+const N = 800, P = [], GA = Math.PI*(3-Math.sqrt(5));
+for (let i = 0; i < N; i++){ const y = 1-2*(i+.5)/N, r = Math.sqrt(1-y*y), th = GA*i; P.push([Math.cos(th)*r, y, Math.sin(th)*r, Math.random()*6.28]); }
+// radius saham: skor +100 = pusat, 0 = tengah-tengah, -100 = tepi bola
+const NODE = D.map((d,i) => { const y = 1-2*(i+.5)/D.length, r = Math.sqrt(1-y*y), th = GA*i*1.9;
+  const rad = 0.09 + (1-(d.s+100)/200)*0.96; return {d, p:[Math.cos(th)*r*rad, y*rad, Math.sin(th)*r*rad]}; });
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let ang = 0, hov = null, mx = -1, my = -1;
+function rot(p, ay, ax){ const x = p[0]*Math.cos(ay)+p[2]*Math.sin(ay), z = -p[0]*Math.sin(ay)+p[2]*Math.cos(ay), y = p[1];
+  return [x, y*Math.cos(ax)-z*Math.sin(ax), y*Math.sin(ax)+z*Math.cos(ax)]; }
+function proj(q, R){ const s = 3.2/(3.2+q[2]*0.9); return [W/2+q[0]*R*s, H/2+q[1]*R*s, s]; }
+function ring(rad, ay, ax, R){ ctx.beginPath(); for (let i = 0; i <= 72; i++){ const a = i/72*6.2832, s = proj(rot([Math.cos(a)*rad,0,Math.sin(a)*rad],ay,ax),R);
+  i ? ctx.lineTo(s[0],s[1]) : ctx.moveTo(s[0],s[1]); } ctx.stroke(); }
+function frame(t){
+  ctx.clearRect(0,0,W,H); const R = Math.min(W,H)*0.38, ay = reduce ? 0.6 : ang, ax = 0.4;
+  const g = ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,R*1.3); g.addColorStop(0,'rgba(0,255,156,0.16)'); g.addColorStop(0.45,'rgba(0,255,156,0.04)'); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(34,211,238,0.16)'; ring(0.36,ay,ax,R); ring(0.70,ay,ax,R); ring(1.0,ay,ax,R);
+  for (const p of P){ const q = rot(p,ay,ax), s = proj(q,R), d = (q[2]+1)/2, tw = 0.6+0.4*Math.sin(t/700+p[3]);
+    ctx.fillStyle = 'rgba(120,255,214,'+(0.08+0.4*d*tw).toFixed(3)+')'; const z = 1.1*s[2]+0.3; ctx.fillRect(s[0],s[1],z,z); }
+  const c0 = proj([0,0,0],R), pc = 1+0.25*Math.sin(t/400);
+  ctx.shadowColor = '#00FF9C'; ctx.shadowBlur = 22; ctx.fillStyle = 'rgba(0,255,156,0.9)'; ctx.beginPath(); ctx.arc(c0[0],c0[1],5*pc,0,6.283); ctx.fill(); ctx.shadowBlur = 0;
+  const pts = NODE.map(n => ({n, q: rot(n.p,ay,ax)})).map(o => ({...o, s: proj(o.q,R)}));
+  ctx.lineWidth = 0.7;
+  for (const o of pts){ const col = WARNA[o.n.d.l]; ctx.strokeStyle = col; ctx.globalAlpha = 0.08+0.1*(o.q[2]+1)/2;
+    ctx.beginPath(); ctx.moveTo(c0[0],c0[1]); ctx.lineTo(o.s[0],o.s[1]); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+  pts.sort((a,b) => a.q[2]-b.q[2]);
+  hov = null; let best = 16;
+  for (const o of pts){ const dd = Math.hypot(o.s[0]-mx, o.s[1]-my); if (dd < best){ best = dd; hov = o; } }
+  for (const o of pts){
+    const d = o.n.d, col = WARNA[d.l], front = o.q[2] > -0.2, strong = d.s >= 60 ? 1+0.3*Math.sin(t/260+o.n.p[1]*5) : 1;
+    const size = (hov === o ? 6.5 : 4.4)*o.s[2]*strong;
+    ctx.globalAlpha = front ? 1 : 0.4; ctx.shadowColor = col; ctx.shadowBlur = d.l === 'BULLISH' ? 14 : 7; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(o.s[0],o.s[1],size,0,6.283); ctx.fill(); ctx.shadowBlur = 0;
+    if (front || hov === o){ ctx.font = '600 10px ui-monospace,Menlo,monospace'; ctx.textAlign = o.s[0] > W/2 ? 'left' : 'right';
+      ctx.fillText(d.k+' '+(d.s>0?'+':'')+d.s, o.s[0]+(o.s[0] > W/2 ? 9 : -9), o.s[1]+3); }
+    ctx.globalAlpha = 1; }
+  if (hov){ const d = hov.n.d, x = 8, y = H-62;
+    const l1 = d.k+'  '+d.l+'  skor '+(d.s>0?'+':'')+d.s, l2 = 'Rp'+d.h+'  '+(d.u>0?'+':'')+d.u+'%', l3 = d.a;
+    ctx.font = '700 11px ui-monospace,Menlo,monospace'; let w = ctx.measureText(l1).width;
+    ctx.font = '10px ui-monospace,Menlo,monospace'; w = Math.min(W-16, Math.max(w, ctx.measureText(l2).width, ctx.measureText(l3).width)+16);
+    ctx.fillStyle = 'rgba(8,20,24,0.92)'; ctx.fillRect(x,y,w,54); ctx.strokeStyle = WARNA[d.l]; ctx.lineWidth = 1; ctx.strokeRect(x,y,w,54);
+    ctx.textAlign = 'left'; ctx.font = '700 11px ui-monospace,Menlo,monospace'; ctx.fillStyle = WARNA[d.l]; ctx.fillText(l1, x+8, y+16);
+    ctx.font = '10px ui-monospace,Menlo,monospace'; ctx.fillStyle = '#C9D1D9'; ctx.fillText(l2, x+8, y+30);
+    ctx.fillStyle = '#8B93A1'; ctx.fillText(l3, x+8, y+44); }
+  if (!reduce){ ang += 0.003; requestAnimationFrame(frame); }
+}
+function pos(e){ const r = cv.getBoundingClientRect(), t = e.touches ? e.touches[0] : e; mx = t.clientX-r.left; my = t.clientY-r.top; if (reduce) frame(0); }
+cv.addEventListener('mousemove', pos); cv.addEventListener('touchstart', pos, {passive:true});
+cv.addEventListener('mouseleave', () => { mx = my = -1; if (reduce) frame(0); });
+requestAnimationFrame(frame);
+</script>
+"""
+
+
+def skor_watchlist(data, kodes):
+    """Skor bullish/bearish tiap saham dari data harian + harga terkini. Hasil: daftar dict, terurut dari paling bullish."""
+    try:
+        harian = live.get_harian_banyak(tuple(kodes), '1y')
+    except Exception:
+        return []
+    hasil = []
+    for k in kodes:
+        try:
+            d = hitung_indikator(live.sambung_live(harian[k], data.get(k)))
+            if len(d) < 60 or d['MA50'].isna().iloc[-1]:
+                continue
+            tk = ringkas_saham(k, d)
+            sk = skor_bull(tk)
+        except Exception:
+            continue
+        if sk:
+            hasil.append({'k': k, 's': sk['skor'], 'l': sk['label'], 'h': angka(tk['harga']), 'u': round(tk['ubah_pct'], 2),
+                          'a': ' · '.join(sk['alasan'][:3])})
+    return sorted(hasil, key=lambda x: -x['s'])
+
+
+def bola_saham(skor):
+    if not skor:
+        st.caption('Skor belum bisa dihitung (data harian Yahoo belum tersedia).')
+        return
+    components.html(BOLA.replace('__DATA__', json.dumps(skor)).replace('__WARNA__', json.dumps(WARNA_BOLA)), height=345)
+    n = {k: sum(1 for x in skor if x['l'] == k) for k in WARNA_BOLA}
+    st.markdown('<div class="tm-lg">' + ''.join(f'<span><i style="background:{w}"></i>{k} {n[k]}</span>' for k, w in WARNA_BOLA.items())
+                + '<span>tengah = paling bullish · makin ke tepi = makin bearish</span></div>', unsafe_allow_html=True)
+    atas = ', '.join(f'<b class="up">{x["k"]} {x["s"]:+d}</b>' for x in skor[:3])
+    bawah = ', '.join(f'<b class="dn">{x["k"]} {x["s"]:+d}</b>' for x in reversed(skor[-3:]) if x['s'] < 0)
+    st.markdown(f'<div class="tm-lg" style="margin-top:.3rem"><span>TERKUAT: {atas}</span>'
+                + (f'<span>TERLEMAH: {bawah}</span>' if bawah else '') + '</div>', unsafe_allow_html=True)
 
 
 def heatmap(data):
@@ -231,8 +254,8 @@ def halaman_terminal(kodes_default):
         data = live.harga_live(kodes)
         kiri, kanan = st.columns(2)
         with kiri:
-            panel_judul('Neural shell · tim agen', f'{len(AGEN)} agen')
-            bola_agen()
+            panel_judul('Bull sphere · peta kekuatan saham', 'tengah = bullish')
+            bola_saham(skor_watchlist(data, kodes))
         with kanan:
             panel_judul('Heatmap watchlist', 'ukuran = nilai, warna = %')
             heatmap(data)
