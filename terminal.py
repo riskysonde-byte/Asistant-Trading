@@ -168,9 +168,10 @@ def skor_watchlist(data, kodes):
     return sorted(hasil, key=lambda x: -x['s'])
 
 
-def muat_universe():
-    """Ambil data harian seluruh emiten (per 100 kode) lalu hitung skornya. Disimpan di sesi."""
+def muat_universe(jumlah):
+    """Ambil data harian emiten terbesar (jumlah = 0 berarti semua), per 100 kode, lalu hitung skornya. Disimpan di sesi."""
     kodes, sumber = universe.daftar()
+    kodes = kodes[:jumlah] if jumlah else kodes
     kelompok = potong(kodes, 100)
     bar = st.progress(0.0, text=f'Mengambil data {len(kodes)} saham ({sumber})...')
     hasil = []
@@ -293,11 +294,13 @@ def halaman_terminal(kodes_default):
     cakupan = st.segmented_control('Cakupan bola', ['Watchlist', 'Seluruh IDX'], default='Watchlist', key='tm_cakupan') or 'Watchlist'
     likuid = 1
     if cakupan == 'Seluruh IDX':
-        k1, k2 = st.columns(2)
-        likuid = k2.select_slider('Likuiditas minimal (nilai transaksi/hari)', options=[0, 0.5, 1, 2, 5, 10, 25], value=1,
+        k1, k2, k3 = st.columns([1, 1, 1])
+        jumlah = k2.select_slider('Jumlah saham dimuat (terbesar dulu)', options=[50, 100, 200, 400, 0], value=100,
+                                  format_func=lambda v: 'semua' if v == 0 else str(v), key='tm_jumlah')
+        likuid = k3.select_slider('Likuiditas minimal (per hari)', options=[0, 0.5, 1, 2, 5, 10, 25], value=1,
                                   format_func=lambda v: 'semua' if v == 0 else f'≥ Rp{v} M', key='tm_likuid')
-        if k1.button('Muat / perbarui seluruh pasar', key='tm_muat', type='primary'):
-            muat_universe()
+        if k1.button('Muat / perbarui data', key='tm_muat', type='primary'):
+            muat_universe(jumlah)
     daftar = st.session_state.get('watchlist') or ','.join(kodes_default)
     kodes = tuple(dict.fromkeys(k.strip().upper() for k in daftar.split(',') if k.strip()))
 
@@ -309,12 +312,12 @@ def halaman_terminal(kodes_default):
             if cakupan == 'Seluruh IDX':
                 u = st.session_state.get('univ')
                 skor = [x for x in u['skor'] if x['n'] >= likuid] if u else []
-                panel_judul('Bull sphere · seluruh IDX', f'{len(skor)} saham' if u else 'belum dimuat')
+                panel_judul('Bull sphere · pasar IDX', f'{len(skor)} saham' if u else 'belum dimuat')
                 if u:
                     st.caption(f'Data harian {u["t"]:%d-%m %H:%M} · {len(u["skor"])} dari {u["diminta"]} saham terbaca ({u["sumber"]}) · '
                                f'{len(skor)} lolos filter likuiditas')
                 else:
-                    st.info('Tekan "Muat / perbarui seluruh pasar" di atas. Pertama kali bisa memakan beberapa menit.')
+                    st.info('Tekan "Muat / perbarui data" di atas. Memuat 100 saham biasanya hanya sebentar.')
                 bola_saham(skor)
             else:
                 panel_judul('Bull sphere · peta kekuatan saham', 'tengah = bullish')
