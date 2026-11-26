@@ -10,9 +10,11 @@ import yfinance as yf
 import grafik
 import live
 import tema
+import persisten
 from jejak import catat
 from tim_agen import TIM
 from arena import halaman_arena, halaman_tanya
+from rekam_ui import halaman_rekam
 from terminal import halaman_terminal
 from fitur_web import get_pasar_dunia, halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci, rahasia
@@ -438,7 +440,8 @@ def tabel_live(data):
 
 def halaman_live():
     with st.expander('⚙️ Atur watchlist dan refresh'):
-        daftar = st.text_area('Watchlist (pisahkan koma)', ','.join(EMITEN), key='watchlist')
+        awal = {} if 'watchlist' in st.session_state else {'value': ','.join(EMITEN)}   # sudah terisi dari penyimpanan = jangan beri default lagi
+        daftar = st.text_area('Watchlist (pisahkan koma)', key='watchlist', **awal)
         c1, c2 = st.columns(2)
         otomatis = c1.toggle('Refresh otomatis', value=True)
         detik = c2.selectbox('Setiap', [15, 30, 60, 120], index=1, format_func=lambda s: f'{s} detik')
@@ -682,6 +685,7 @@ def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
         catat(agen, f'bermasalah: {ket}', 'err')
     hitung = {p: sum(1 for x in hasil['saham'].values() if x['putusan']['putusan'] == p) for p in ('BELI', 'TUNGGU', 'SKIP')}
     catat('KOORDINATOR', f'BELI {hitung["BELI"]} · TUNGGU {hitung["TUNGGU"]} · SKIP {hitung["SKIP"]}', 'ok')
+    persisten.catat_sinyal_kantor(hasil)
     return hasil
 
 
@@ -842,14 +846,15 @@ def halaman_kantor():
 
 
 # ---------- Utama ----------
+persisten.muat_awal()
 tema.terapkan()
 tema.header(*live.status_bursa())
 tema.bar_pasar(get_pasar_dunia())
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_term, tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena = st.tabs(
-    ['🖥️ Terminal', '🌅 Pasar', '📈 Live', '🔍 Scanner', '🧪 Analisis', '🏢 Kantor Agen', '🌐 Riset Web', '💬 Tanya AI', '⚔️ Arena'])
+tab_term, tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena, tab_rekam = st.tabs(
+    ['🖥️ Terminal', '🌅 Pasar', '📈 Live', '🔍 Scanner', '🧪 Analisis', '🏢 Kantor Agen', '🌐 Riset Web', '💬 Tanya AI', '⚔️ Arena', '📊 Rekam Jejak'])
 with tab_pasar:
     halaman_pasar()
 with tab_live:
@@ -867,8 +872,11 @@ with tab_tanya:
     halaman_tanya()
 with tab_arena:
     halaman_arena()
+with tab_rekam:
+    halaman_rekam()
 # Terminal diisi paling akhir supaya membaca hasil fitur lain dari run yang sama (urutan tab tetap pertama).
 with tab_term:
     halaman_terminal(list(EMITEN))
 
 st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
+persisten.sinkron()

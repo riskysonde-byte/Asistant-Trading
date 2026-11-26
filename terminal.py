@@ -10,6 +10,7 @@ import grafik
 import live
 import simulasi as sm
 from fitur_web import pasar_hari_ini
+import persisten
 import universe
 from jejak import catat
 from kantor import hitung_indikator, potong, ringkas_saham, skor_bull, stat_jurnal
@@ -147,7 +148,7 @@ def _skor_satu(k, df, lv=None):
     if not sk:
         return None
     nv = float((d['Close'] * d['Volume']).tail(20).mean()) / 1e9     # nilai transaksi rata-rata/hari, miliar Rp
-    return {'k': k, 's': sk['skor'], 'l': sk['label'], 'h': angka(tk['harga']), 'u': round(tk['ubah_pct'], 2),
+    return {'k': k, 's': sk['skor'], 'l': sk['label'], 'h': angka(tk['harga']), 'hn': tk['harga'], 'u': round(tk['ubah_pct'], 2),
             'n': round(nv, 1), 'a': ' · '.join(sk['alasan'][:3])}
 
 
@@ -192,13 +193,19 @@ def muat_universe(jumlah):
     st.session_state['univ'] = {'t': live.sekarang(), 'skor': sorted(hasil, key=lambda x: -x['s']),
                                 'diminta': len(kodes), 'sumber': sumber}
     catat('TERMINAL', f'Bola seluruh pasar: {len(hasil)} dari {len(kodes)} saham ({sumber})', 'ok' if hasil else 'warn')
+    if len(hasil) >= 50:
+        persisten.catat_skor(hasil)
 
 
 def bola_saham(skor):
     if not skor:
         st.caption('Skor belum bisa dihitung (data harian Yahoo belum tersedia).')
         return
-    components.html(BOLA.replace('__DATA__', json.dumps(skor)).replace('__WARNA__', json.dumps(WARNA_BOLA)), height=345)
+    isi = BOLA.replace('__DATA__', json.dumps(skor).replace('</', '<\\/')).replace('__WARNA__', json.dumps(WARNA_BOLA))
+    if hasattr(st, 'iframe'):            # components.v1.html akan dihapus dari Streamlit
+        st.iframe(isi, height=345)
+    else:
+        components.html(isi, height=345)
     n = {k: sum(1 for x in skor if x['l'] == k) for k in WARNA_BOLA}
     st.markdown('<div class="tm-lg">' + ''.join(f'<span><i style="background:{w}"></i>{k} {n[k]}</span>' for k, w in WARNA_BOLA.items())
                 + '<span>tengah = paling bullish · makin ke tepi = makin bearish</span></div>', unsafe_allow_html=True)
@@ -245,7 +252,7 @@ def live_feed():
     if not log:
         isi = '<div class="info">Belum ada aktivitas. Jalankan Cek pasar, Kantor Agen, Riset Web, atau Sidang.</div>'
     else:
-        isi = ''.join(f'<div><span class="t">[{x["t"]}]</span> <span class="s">{html.escape(x["s"]):<11}</span>'
+        isi = ''.join(f'<div><span class="t">[{x["t"]}]</span> <span class="s">{html.escape(x["s"]):<12}</span>'
                       f'<span class="{x["l"]}">{html.escape(x["x"])}</span></div>' for x in reversed(log[-40:]))
     st.markdown(f'<div class="tm-box tm-feed">{isi}</div>', unsafe_allow_html=True)
 
