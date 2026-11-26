@@ -10,6 +10,7 @@ import live
 import simulasi as sm
 from fitur_web import angka_id, jalankan_web, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci
+from jejak import catat
 from kantor import ambil_json, bersihkan_sidang, hitung_indikator, ringkas_saham, stat_jurnal
 
 SIM_AWAL = 10_000_000
@@ -206,6 +207,7 @@ def mulai_sidang(kode, note):
     if not H:
         raise ValueError('Naskah sidang kosong atau tidak terbaca. Coba lagi.')
     st.session_state['sidang'] = {'kode': kode, 'H': H, 'palu': None, 'anim': True, 'info': ''}
+    catat('SIDANG', f'{kode}: hakim memutuskan {H["putusan"]}', 'ok')
 
 
 def _pilih_kode(kode):
@@ -218,6 +220,7 @@ def _palu(palu):
     riwayat = st.session_state.setdefault('riwayat_sidang', [])
     riwayat.insert(0, {'t': waktu_str(), 'kode': s['kode'], 'hakim': s['H']['putusan'], 'palu': palu})
     del riwayat[20:]
+    catat('SIDANG', f'{s["kode"]}: palumu {palu} (hakim {s["H"]["putusan"]})')
 
 
 def _ikuti_sim():
@@ -341,6 +344,8 @@ def _sim_sinkron():
     sm.sim_sinkron(sim, px, rencana, waktu_str())
     if not sim['log']:
         sim['log'] = ['Tidak ada perubahan']
+    for baris in sim['log']:
+        catat('SIMULASI', baris)
 
 
 def _sim_reset(modal):

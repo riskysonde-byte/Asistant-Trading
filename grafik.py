@@ -107,3 +107,26 @@ def candle(d, kode, prev_close=None, intraday=True, ma=(20,), tampil_vwap=True, 
 
 CONFIG = {'displaylogo': False, 'scrollZoom': True,
           'modeBarButtonsToRemove': ['lasso2d', 'select2d', 'autoScale2d']}
+
+
+def mini(d, kode, prev_close, ubah_pct, tinggi=190):
+    """Candlestick mini untuk panel terminal (tanpa volume dan legenda)."""
+    d = d.copy()
+    if d.index.tz is not None:
+        d.index = d.index.tz_localize(None)
+    warna = NAIK if ubah_pct >= 0 else TURUN
+    fig = go.Figure(go.Candlestick(
+        x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close'], showlegend=False,
+        increasing=dict(line=dict(color=NAIK, width=1), fillcolor=NAIK),
+        decreasing=dict(line=dict(color=TURUN, width=1), fillcolor=TURUN)))
+    if prev_close:
+        fig.add_hline(y=prev_close, line=dict(color=ABU, width=1, dash='dot'))
+    fig.add_annotation(xref='paper', yref='paper', x=0.01, y=0.99, showarrow=False, xanchor='left', yanchor='top',
+                       text=f'<b>{kode}</b>  {d["Close"].iloc[-1]:,.0f}  {ubah_pct:+.2f}%'.replace(',', '.'),
+                       font=dict(size=12, color=warna, family='ui-monospace,Menlo,monospace'))
+    fig.update_xaxes(rangebreaks=[dict(bounds=['sat', 'mon']), dict(bounds=[16, 9], pattern='hour')],
+                     rangeslider_visible=False, showgrid=False, tickformat='%H:%M', tickfont=dict(size=9))
+    fig.update_yaxes(tickformat=',.0f', side='right', tickfont=dict(size=9), nticks=4)
+    fig.update_layout(height=tinggi, margin=dict(l=4, r=4, t=4, b=4), separators=',.', dragmode=False,
+                      uirevision=kode)
+    return fig

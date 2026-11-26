@@ -360,3 +360,37 @@ def bersihkan_sidang(res):
             return 5.0
     return {'ronde': ronde, 'putusan': put, 'alasan': str(h.get('alasan') or '')[:420],
             'syarat': str(h.get('syarat') or '')[:200], 'banteng': nilai(sk.get('banteng')), 'beruang': nilai(sk.get('beruang'))}
+
+
+# ---------- Skor bullish / bearish (dipakai bola di tab Terminal) ----------
+BATAS_BULL = 25
+
+
+def skor_bull(tk):
+    """Skor -100 (sangat bearish) sampai +100 (sangat bullish) dari data teknikal yang sudah dihitung kode.
+
+    tk: hasil ringkas_saham. Bobot: struktur tren 40, MACD 20, RSI 20, perubahan hari ini 20.
+    Hasil: {'skor', 'label', 'alasan'}. None jika data tidak cukup."""
+    try:
+        harga, ma20, ma50 = float(tk['harga']), float(tk['ma20']), float(tk['ma50'])
+        rsi, macd, sinyal = float(tk['rsi14']), float(tk['macd']), float(tk['macd_sinyal'])
+        ubah = float(tk['ubah_pct'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if min(harga, ma20, ma50) <= 0 or any(math.isnan(v) for v in (rsi, macd, sinyal, ubah)):
+        return None
+    alasan = []
+    s = 0.0
+    for kondisi, bobot, naik, turun in ((harga > ma20, 15, 'di atas MA20', 'di bawah MA20'),
+                                        (ma20 > ma50, 15, 'MA20 di atas MA50', 'MA20 di bawah MA50'),
+                                        (harga > ma50, 10, 'di atas MA50', 'di bawah MA50')):
+        s += bobot if kondisi else -bobot
+        alasan.append(naik if kondisi else turun)
+    s += 20 if macd > sinyal else -20
+    alasan.append('MACD naik' if macd > sinyal else 'MACD turun')
+    s += max(-1.0, min(1.0, (rsi - 50) / 25)) * 20
+    alasan.append(f'RSI {rsi:.0f}')
+    s += max(-1.0, min(1.0, ubah / 3)) * 20
+    skor = int(round(max(-100, min(100, s))))
+    label = 'BULLISH' if skor >= BATAS_BULL else 'BEARISH' if skor <= -BATAS_BULL else 'NETRAL'
+    return {'skor': skor, 'label': label, 'alasan': alasan}

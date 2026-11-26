@@ -8,6 +8,7 @@ import yfinance as yf
 
 import live
 from gemini import blok_gambar, jalankan, kunci
+from jejak import catat
 from kantor import ambil_json, bersihkan_pasar, kode_valid, kumpul_kode
 
 INDEKS = [
@@ -84,6 +85,7 @@ def baca_pasar(pakai_web, catatan, foto):
         raise ValueError('Jawaban AI tidak terbaca. Coba lagi.')
     hasil.update({'tanggal': live.sekarang().date().isoformat(), 'waktu': live.sekarang(),
                   'data': data, 'sumber': sumber, 'pakai_web': ok_web})
+    catat('PASAR', f'{hasil["keputusan"]} · skor {hasil["skor"]} · ukuran posisi {hasil["ukuran"]}%', 'ok')
     return hasil
 
 
@@ -228,6 +230,7 @@ def halaman_pasar():
             try:
                 with st.spinner('Mencari data bursa di web, sekitar 1 menit...'):
                     st.session_state['radar'] = pindai_radar()
+                catat('RADAR', f'{len(st.session_state["radar"]["yahoo"])} kode dicek silang dengan Yahoo', 'ok')
             except Exception as e:
                 st.error('Radar gagal: ' + str(e)[:200])
     tampil_radar()
@@ -306,6 +309,7 @@ def halaman_riset():
                     for k, f in futs.items():
                         try:
                             st.session_state['riset'][k] = f.result()
+                            catat('RISET', f'{k}: {str(st.session_state["riset"][k]["r"].get("putusan_web", "?")).upper()}', 'ok')
                         except Exception as e:
                             st.error(f'{k} gagal: ' + str(e)[:150])
     tampil_riset()
