@@ -10,8 +10,10 @@ import yfinance as yf
 import grafik
 import live
 import tema
+from jejak import catat
 from tim_agen import TIM
 from arena import halaman_arena, halaman_tanya
+from terminal import halaman_terminal
 from fitur_web import get_pasar_dunia, halaman_pasar, halaman_riset, pasar_hari_ini, riset_terbaru
 from gemini import blok_gambar, jalankan, kunci, rahasia
 from kantor import (GAYA, hitung_indikator, KOLOM_JURNAL, MAKS_SAHAM, ambil_json, atr, bulat_bawah, fraksi, hitung_lot,
@@ -554,10 +556,13 @@ def paralel_aman(panggilan, maks=4):
 
 def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
     hasil = {'waktu': live.sekarang(), 'dilewati': {}, 'galat': {}, 'modal': modal, 'risiko': risiko}
+    catat('KANTOR', f'Mulai: {len(kodes)} saham dipantau')
 
     status.write('Mengambil data harga terkini...')
     teknikal, ekstra, gagal = kumpulkan_data(kodes, auto_fund)
     hasil['gagal_data'] = gagal
+    catat('DATA', f'{len(teknikal)} saham dengan harga terkini' + (f', gagal: {", ".join(gagal)}' if gagal else ''),
+          'warn' if gagal else 'info')
     if not teknikal:
         raise ValueError('Tidak ada saham yang datanya bisa diambil')
 
@@ -665,11 +670,18 @@ def jalankan_kantor(kodes, modal, risiko, foto, teks_user, auto_fund, status):
         hasil['galat']['KOORDINATOR'] = str([v for v in jawaban.values() if isinstance(v, Exception)][0])[:150]
     putusan_ai = per_kode(kumpul_daftar(teks_ok)[0])
 
+    catat('KASIR', f'{sum(1 for v in kas.values() if v)} rencana lot dan risiko dihitung')
     hasil['makro'] = makro_teks
     hasil['saham'] = {k: {'teknikal': paket[k]['teknikal'], 'lap': lap[k], 'kasir': kas[k],
                           'putusan': pagar(putusan_ai.get(k), kas[k], pasar['keputusan'] if pasar else None,
                                            str(riset[k]['r'].get('putusan_web', '')).upper() if k in riset else None)}
                           for k in paket}
+    for agen, ket in hasil['dilewati'].items():
+        catat(agen, f'dilewati: {ket}', 'warn')
+    for agen, ket in hasil['galat'].items():
+        catat(agen, f'bermasalah: {ket}', 'err')
+    hitung = {p: sum(1 for x in hasil['saham'].values() if x['putusan']['putusan'] == p) for p in ('BELI', 'TUNGGU', 'SKIP')}
+    catat('KOORDINATOR', f'BELI {hitung["BELI"]} · TUNGGU {hitung["TUNGGU"]} · SKIP {hitung["SKIP"]}', 'ok')
     return hasil
 
 
@@ -836,8 +848,8 @@ tema.bar_pasar(get_pasar_dunia())
 if not kunci():
     st.warning('GEMINI_API_KEY belum diisi di Secrets, jadi agen AI belum bisa dipakai.')
 
-tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena = st.tabs(
-    ['🌅 Pasar', '📈 Live', '🔍 Scanner', '🧪 Analisis', '🏢 Kantor Agen', '🌐 Riset Web', '💬 Tanya AI', '⚔️ Arena'])
+tab_term, tab_pasar, tab_live, tab_scan, tab_analisis, tab_kantor, tab_riset, tab_tanya, tab_arena = st.tabs(
+    ['🖥️ Terminal', '🌅 Pasar', '📈 Live', '🔍 Scanner', '🧪 Analisis', '🏢 Kantor Agen', '🌐 Riset Web', '💬 Tanya AI', '⚔️ Arena'])
 with tab_pasar:
     halaman_pasar()
 with tab_live:
@@ -855,5 +867,8 @@ with tab_tanya:
     halaman_tanya()
 with tab_arena:
     halaman_arena()
+# Terminal diisi paling akhir supaya membaca hasil fitur lain dari run yang sama (urutan tab tetap pertama).
+with tab_term:
+    halaman_terminal(list(EMITEN))
 
 st.caption('Alat bantu analisis, bukan nasihat keuangan. Keputusan akhir ada di kamu.')
