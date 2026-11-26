@@ -10,7 +10,9 @@ import grafik
 import live
 import simulasi as sm
 from fitur_web import pasar_hari_ini
-from kantor import hitung_indikator, ringkas_saham, skor_bull, stat_jurnal
+import universe
+from jejak import catat
+from kantor import hitung_indikator, potong, ringkas_saham, skor_bull, stat_jurnal
 from tema import angka, persen
 
 WARNA_BOLA = {'BULLISH': '#00FF9C', 'NETRAL': '#F5B342', 'BEARISH': '#FF4D4F'}
@@ -75,7 +77,11 @@ fit(); addEventListener('resize', () => { fit(); if (reduce) frame(0); });
 const N = 800, P = [], GA = Math.PI*(3-Math.sqrt(5));
 for (let i = 0; i < N; i++){ const y = 1-2*(i+.5)/N, r = Math.sqrt(1-y*y), th = GA*i; P.push([Math.cos(th)*r, y, Math.sin(th)*r, Math.random()*6.28]); }
 // radius saham: skor +100 = pusat, 0 = tengah-tengah, -100 = tepi bola
-const NODE = D.map((d,i) => { const y = 1-2*(i+.5)/D.length, r = Math.sqrt(1-y*y), th = GA*i*1.9;
+const DS = D.slice().sort((a,b) => a.k < b.k ? -1 : 1);   // arah titik diacak dari skor agar tersebar merata
+const ORD = D.slice().sort((a,b) => b.s-a.s);
+const TAMPIL = new Set((D.length <= 40 ? D : ORD.slice(0,8).concat(ORD.slice(-8))).map(x => x.k));
+const BASE = D.length > 300 ? 1.8 : D.length > 120 ? 2.6 : D.length > 40 ? 3.4 : 4.4;
+const NODE = DS.map((d,i) => { const y = 1-2*(i+.5)/DS.length, r = Math.sqrt(1-y*y), th = GA*i*1.9;
   const rad = 0.09 + (1-(d.s+100)/200)*0.96; return {d, p:[Math.cos(th)*r*rad, y*rad, Math.sin(th)*r*rad]}; });
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 let ang = 0, hov = null, mx = -1, my = -1;
@@ -99,18 +105,22 @@ function frame(t){
     ctx.beginPath(); ctx.moveTo(c0[0],c0[1]); ctx.lineTo(o.s[0],o.s[1]); ctx.stroke(); }
   ctx.globalAlpha = 1;
   pts.sort((a,b) => a.q[2]-b.q[2]);
-  hov = null; let best = 16;
+  hov = null; let best = D.length > 120 ? 10 : 16;
   for (const o of pts){ const dd = Math.hypot(o.s[0]-mx, o.s[1]-my); if (dd < best){ best = dd; hov = o; } }
+  const taken = [];
   for (const o of pts){
-    const d = o.n.d, col = WARNA[d.l], front = o.q[2] > -0.2, strong = d.s >= 60 ? 1+0.3*Math.sin(t/260+o.n.p[1]*5) : 1;
-    const size = (hov === o ? 6.5 : 4.4)*o.s[2]*strong;
-    ctx.globalAlpha = front ? 1 : 0.4; ctx.shadowColor = col; ctx.shadowBlur = d.l === 'BULLISH' ? 14 : 7; ctx.fillStyle = col;
+    const d = o.n.d, col = WARNA[d.l], front = o.q[2] > -0.2, strong = (d.s >= 60 && D.length <= 120) ? 1+0.3*Math.sin(t/260+o.n.p[1]*5) : 1;
+    const size = (hov === o ? 6.5 : BASE)*o.s[2]*strong;
+    ctx.globalAlpha = front ? 1 : 0.4; ctx.shadowColor = col; ctx.shadowBlur = D.length > 300 ? 0 : (d.l === 'BULLISH' ? 14 : 7); ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(o.s[0],o.s[1],size,0,6.283); ctx.fill(); ctx.shadowBlur = 0;
-    if (front || hov === o){ ctx.font = '600 10px ui-monospace,Menlo,monospace'; ctx.textAlign = o.s[0] > W/2 ? 'left' : 'right';
-      ctx.fillText(d.k+' '+(d.s>0?'+':'')+d.s, o.s[0]+(o.s[0] > W/2 ? 9 : -9), o.s[1]+3); }
+    if ((front && TAMPIL.has(d.k)) || hov === o){
+      const lx = o.s[0]+(o.s[0] > W/2 ? 9 : -9), ly = o.s[1]+3;
+      if (hov === o || !taken.some(t => Math.abs(t[0]-lx) < 50 && Math.abs(t[1]-ly) < 11)){
+        taken.push([lx, ly]); ctx.font = '600 10px ui-monospace,Menlo,monospace'; ctx.textAlign = o.s[0] > W/2 ? 'left' : 'right';
+        ctx.fillText(d.k+' '+(d.s>0?'+':'')+d.s, lx, ly); } }
     ctx.globalAlpha = 1; }
   if (hov){ const d = hov.n.d, x = 8, y = H-62;
-    const l1 = d.k+'  '+d.l+'  skor '+(d.s>0?'+':'')+d.s, l2 = 'Rp'+d.h+'  '+(d.u>0?'+':'')+d.u+'%', l3 = d.a;
+    const l1 = d.k+'  '+d.l+'  skor '+(d.s>0?'+':'')+d.s, l2 = 'Rp'+d.h+'  '+(d.u>0?'+':'')+d.u+'%'+(d.n != null ? '  ·  Rp'+d.n+' M/hari' : ''), l3 = d.a;
     ctx.font = '700 11px ui-monospace,Menlo,monospace'; let w = ctx.measureText(l1).width;
     ctx.font = '10px ui-monospace,Menlo,monospace'; w = Math.min(W-16, Math.max(w, ctx.measureText(l2).width, ctx.measureText(l3).width)+16);
     ctx.fillStyle = 'rgba(8,20,24,0.92)'; ctx.fillRect(x,y,w,54); ctx.strokeStyle = WARNA[d.l]; ctx.lineWidth = 1; ctx.strokeRect(x,y,w,54);
@@ -127,8 +137,22 @@ requestAnimationFrame(frame);
 """
 
 
+def _skor_satu(k, df, lv=None):
+    """Skor satu saham dari data harian (opsional digabung harga live). None jika data kurang."""
+    d = hitung_indikator(live.sambung_live(df, lv) if lv else df)
+    if len(d) < 60 or d['MA50'].isna().iloc[-1]:
+        return None
+    tk = ringkas_saham(k, d)
+    sk = skor_bull(tk)
+    if not sk:
+        return None
+    nv = float((d['Close'] * d['Volume']).tail(20).mean()) / 1e9     # nilai transaksi rata-rata/hari, miliar Rp
+    return {'k': k, 's': sk['skor'], 'l': sk['label'], 'h': angka(tk['harga']), 'u': round(tk['ubah_pct'], 2),
+            'n': round(nv, 1), 'a': ' · '.join(sk['alasan'][:3])}
+
+
 def skor_watchlist(data, kodes):
-    """Skor bullish/bearish tiap saham dari data harian + harga terkini. Hasil: daftar dict, terurut dari paling bullish."""
+    """Skor bullish/bearish watchlist dari data harian + harga terkini. Terurut dari paling bullish."""
     try:
         harian = live.get_harian_banyak(tuple(kodes), '1y')
     except Exception:
@@ -136,17 +160,37 @@ def skor_watchlist(data, kodes):
     hasil = []
     for k in kodes:
         try:
-            d = hitung_indikator(live.sambung_live(harian[k], data.get(k)))
-            if len(d) < 60 or d['MA50'].isna().iloc[-1]:
-                continue
-            tk = ringkas_saham(k, d)
-            sk = skor_bull(tk)
+            x = _skor_satu(k, harian[k], data.get(k))
         except Exception:
             continue
-        if sk:
-            hasil.append({'k': k, 's': sk['skor'], 'l': sk['label'], 'h': angka(tk['harga']), 'u': round(tk['ubah_pct'], 2),
-                          'a': ' · '.join(sk['alasan'][:3])})
+        if x:
+            hasil.append(x)
     return sorted(hasil, key=lambda x: -x['s'])
+
+
+def muat_universe():
+    """Ambil data harian seluruh emiten (per 100 kode) lalu hitung skornya. Disimpan di sesi."""
+    kodes, sumber = universe.daftar()
+    kelompok = potong(kodes, 100)
+    bar = st.progress(0.0, text=f'Mengambil data {len(kodes)} saham ({sumber})...')
+    hasil = []
+    for i, grup in enumerate(kelompok):
+        try:
+            harian = live.get_harian_banyak(tuple(grup), '6mo')
+        except Exception:
+            harian = {}
+        for k, df in harian.items():
+            try:
+                x = _skor_satu(k, df)
+            except Exception:
+                continue
+            if x:
+                hasil.append(x)
+        bar.progress((i + 1) / len(kelompok), text=f'{min((i + 1) * 100, len(kodes))}/{len(kodes)} saham diproses · {len(hasil)} berhasil')
+    bar.empty()
+    st.session_state['univ'] = {'t': live.sekarang(), 'skor': sorted(hasil, key=lambda x: -x['s']),
+                                'diminta': len(kodes), 'sumber': sumber}
+    catat('TERMINAL', f'Bola seluruh pasar: {len(hasil)} dari {len(kodes)} saham ({sumber})', 'ok' if hasil else 'warn')
 
 
 def bola_saham(skor):
@@ -246,6 +290,14 @@ def halaman_terminal(kodes_default):
     otomatis = c1.toggle('Refresh otomatis', value=True, key='tm_oto')
     detik = c2.selectbox('Setiap', [15, 30, 60], index=1, format_func=lambda s: f'{s} detik', key='tm_detik',
                          label_visibility='collapsed')
+    cakupan = st.segmented_control('Cakupan bola', ['Watchlist', 'Seluruh IDX'], default='Watchlist', key='tm_cakupan') or 'Watchlist'
+    likuid = 1
+    if cakupan == 'Seluruh IDX':
+        k1, k2 = st.columns(2)
+        likuid = k2.select_slider('Likuiditas minimal (nilai transaksi/hari)', options=[0, 0.5, 1, 2, 5, 10, 25], value=1,
+                                  format_func=lambda v: 'semua' if v == 0 else f'≥ Rp{v} M', key='tm_likuid')
+        if k1.button('Muat / perbarui seluruh pasar', key='tm_muat', type='primary'):
+            muat_universe()
     daftar = st.session_state.get('watchlist') or ','.join(kodes_default)
     kodes = tuple(dict.fromkeys(k.strip().upper() for k in daftar.split(',') if k.strip()))
 
@@ -254,8 +306,19 @@ def halaman_terminal(kodes_default):
         data = live.harga_live(kodes)
         kiri, kanan = st.columns(2)
         with kiri:
-            panel_judul('Bull sphere · peta kekuatan saham', 'tengah = bullish')
-            bola_saham(skor_watchlist(data, kodes))
+            if cakupan == 'Seluruh IDX':
+                u = st.session_state.get('univ')
+                skor = [x for x in u['skor'] if x['n'] >= likuid] if u else []
+                panel_judul('Bull sphere · seluruh IDX', f'{len(skor)} saham' if u else 'belum dimuat')
+                if u:
+                    st.caption(f'Data harian {u["t"]:%d-%m %H:%M} · {len(u["skor"])} dari {u["diminta"]} saham terbaca ({u["sumber"]}) · '
+                               f'{len(skor)} lolos filter likuiditas')
+                else:
+                    st.info('Tekan "Muat / perbarui seluruh pasar" di atas. Pertama kali bisa memakan beberapa menit.')
+                bola_saham(skor)
+            else:
+                panel_judul('Bull sphere · peta kekuatan saham', 'tengah = bullish')
+                bola_saham(skor_watchlist(data, kodes))
         with kanan:
             panel_judul('Heatmap watchlist', 'ukuran = nilai, warna = %')
             heatmap(data)
