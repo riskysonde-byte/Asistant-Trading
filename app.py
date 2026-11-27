@@ -1,5 +1,6 @@
 """Asisten Trading IDX: Scanner + Analisis satu saham (Streamlit)."""
 import concurrent.futures as cf
+import hmac
 import html
 import json
 
@@ -42,10 +43,17 @@ EMITEN = {
 
 # ---------- Rahasia (API key & password) ----------
 sandi = rahasia('APP_PASSWORD')
-if sandi:
-    masukan = st.text_input('Password', type='password')
-    if masukan != sandi:
-        st.stop()
+if sandi and not st.session_state.get('_masuk'):
+    st.markdown('### 🔒 Asisten Trading IDX')
+    with st.form('login'):
+        masukan = st.text_input('Password', type='password')
+        kirim = st.form_submit_button('Masuk', type='primary')
+    if kirim and hmac.compare_digest(str(masukan).encode(), str(sandi).encode()):
+        st.session_state['_masuk'] = True
+        st.rerun()
+    if kirim:
+        st.error('Password salah.')
+    st.stop()
 
 
 # ---------- Data ----------
