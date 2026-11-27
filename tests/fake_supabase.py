@@ -8,7 +8,8 @@ KUNCI = 'rahasia-tes'
 
 
 class Server:
-    def __init__(self):
+    def __init__(self, kunci=KUNCI):
+        self.kunci = kunci
         self.tabel = {}
         self.log = []
         outer = self
@@ -18,7 +19,10 @@ class Server:
                 pass
 
             def _auth(self):
-                if self.headers.get('apikey') != KUNCI or self.headers.get('Authorization') != 'Bearer ' + KUNCI:
+                bearer = self.headers.get('Authorization')
+                sb = outer.kunci.startswith('sb_')
+                # kunci baru (sb_...): Authorization tidak boleh ada; kunci lama (JWT): harus Bearer yang sama
+                if self.headers.get('apikey') != outer.kunci or (bearer is not None) == sb or (not sb and bearer != 'Bearer ' + outer.kunci):
                     self._kirim(401, {'message': 'Invalid API key'})
                     return False
                 return True

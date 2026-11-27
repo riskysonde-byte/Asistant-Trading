@@ -76,3 +76,16 @@ def test_dari_env():
     assert penyimpan.dari_env({}) is None
     assert penyimpan.dari_env({'SUPABASE_URL': 'https://a.supabase.co'}) is None
     assert penyimpan.dari_env({'SUPABASE_URL': 'https://a.supabase.co/', 'SUPABASE_KEY': 'k'}).url == 'https://a.supabase.co'
+
+
+@pytest.mark.parametrize('kunci', ['sb_secret_abc123', 'eyJhbGciOiJIUzI1NiJ9.contoh.jwt'])
+def test_format_kunci_lama_dan_baru(kunci):
+    """Kunci baru (sb_secret_) dikirim tanpa Authorization; kunci lama (JWT) dikirim sebagai Bearer."""
+    srv = fake_supabase.Server(kunci)
+    try:
+        d = penyimpan.Supabase(srv.url, kunci)
+        assert ('Authorization' in d.h) == (not kunci.startswith('sb_'))
+        d.kv_set('x', 1)
+        assert d.kv_get('x') == 1
+    finally:
+        srv.tutup()

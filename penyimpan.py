@@ -29,7 +29,12 @@ class Supabase:
 
     def __init__(self, url, kunci):
         self.url = url.strip().rstrip('/')
-        self.h = {'apikey': kunci.strip(), 'Authorization': 'Bearer ' + kunci.strip(), 'Content-Type': 'application/json'}
+        k = kunci.strip()
+        self.h = {'apikey': k, 'Content-Type': 'application/json'}
+        if not k.startswith('sb_'):
+            # Kunci lama (service_role, berbentuk JWT) juga dikirim sebagai Bearer.
+            # Kunci baru (sb_secret_...) bukan JWT: cukup header apikey, Bearer akan ditolak gateway.
+            self.h['Authorization'] = 'Bearer ' + k
 
     def _ke(self, tabel):
         return f'{self.url}/rest/v1/{tabel}'
